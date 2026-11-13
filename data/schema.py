@@ -4,12 +4,24 @@ import pandas as pd
 STANDARD_COLUMNS: tuple[str, ...] = ("time", "open", "high", "low", "close", "volume")
 REQUIRED_OHLC_COLUMNS: tuple[str, ...] = ("time", "open", "high", "low", "close")
 REQUIRED_COLUMNS: set[str] = set(REQUIRED_OHLC_COLUMNS)
+OPTIONAL_QUOTE_COLUMNS: tuple[str, ...] = (
+    "bid_open",
+    "bid_high",
+    "bid_low",
+    "bid_close",
+    "ask_open",
+    "ask_high",
+    "ask_low",
+    "ask_close",
+    "spread",
+)
 
 
 def normalize_schema(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """
     Chuẩn hóa DataFrame đầu vào về Schema OHLCV tiêu chuẩn:
-    (time, open, high, low, close, volume) và trả về (df_normalized, volume_type).
+    (time, open, high, low, close, volume) kèm các cột Bid/Ask tùy chọn nếu có,
+    và trả về (df_normalized, volume_type).
     """
     out = df.copy()
     # Chuẩn hóa tên cột về chữ thường, bỏ khoảng trắng thừa
@@ -34,5 +46,5 @@ def normalize_schema(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         raise ValueError(f"Thiếu các cột bắt buộc trong Schema: {missing}")
 
     out["volume"] = pd.to_numeric(out["volume"], errors="coerce")
-    return out[list(STANDARD_COLUMNS)].copy(), volume_type
-
+    keep_cols = list(STANDARD_COLUMNS) + [c for c in OPTIONAL_QUOTE_COLUMNS if c in out.columns]
+    return out[keep_cols].copy(), volume_type

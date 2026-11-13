@@ -97,6 +97,7 @@ def test_sma20_signal_at_bar_19_fills_at_bar_20():
     df.loc[19, "low"] = 49.0
     df.loc[19, "close"] = 50.0  # Bar index 19 (20th bar) triggers Bollinger lower band
     df.loc[20, "open"] = 55.0   # Bar index 20 Open price where fill must happen
+    df.loc[20, "low"] = 54.0
 
     strat = MeanReversionStrategy(window=20, std_multiplier=2.0)
     assert strat.warmup_period == 20

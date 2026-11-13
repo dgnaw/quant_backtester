@@ -47,17 +47,17 @@ Tài liệu này đóng vai trò là **Kim chỉ nam kiến trúc (Architecture 
 - [x] Có cách truyền SL/TP, trailing stop hoặc sizing instruction tùy chọn.
 - [x] Strategy không tự gọi broker hoặc tự ghi nhận PnL.
 
-### D. Order và Execution Model (P0) — [0/10]
-- [ ] Hỗ trợ Market, Limit và Stop Order theo phạm vi đã chọn.
-- [ ] Không khớp lệnh tại giá đã biết trước khi tín hiệu được tạo (Anti-Lookahead).
-- [ ] Có quy tắc fill price rõ ràng.
-- [ ] Mô phỏng Bid/Ask spread.
-- [ ] Tính commission theo đúng đơn vị hợp đồng.
-- [ ] Có slippage model.
-- [ ] Xử lý gap qua Stop Loss/Take Profit.
-- [ ] Có quy tắc khi SL và TP cùng bị chạm trong một nến.
-- [ ] Thiết kế mở rộng cho partial fills và rejected orders.
-- [ ] Ghi lại order lifecycle và lý do fill/reject/cancel.
+### D. Order và Execution Model (P0) — [10/10] Hoàn thành
+- [x] Hỗ trợ Market, Limit và Stop Order theo phạm vi đã chọn.
+- [x] Không khớp lệnh tại giá đã biết trước khi tín hiệu được tạo (Anti-Lookahead).
+- [x] Có quy tắc fill price rõ ràng.
+- [x] Mô phỏng Bid/Ask spread.
+- [x] Tính commission theo đúng đơn vị hợp đồng.
+- [x] Có slippage model.
+- [x] Xử lý gap qua Stop Loss/Take Profit.
+- [x] Có quy tắc khi SL và TP cùng bị chạm trong một nến.
+- [x] Thiết kế mở rộng cho partial fills và rejected orders.
+- [x] Ghi lại order lifecycle và lý do fill/reject/cancel.
 
 ### E. Position và Account Management (P0) — [0/8]
 - [ ] Quản lý trạng thái Flat, Long, Short.

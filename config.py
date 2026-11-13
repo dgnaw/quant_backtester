@@ -8,6 +8,10 @@ class ReversePolicy(Enum):
     REVERSE = "REVERSE"
 
 
+class IntrabarConflictPolicy(Enum):
+    WORST_CASE_SL_FIRST = "WORST_CASE_SL_FIRST"
+    BEST_CASE_TP_FIRST = "BEST_CASE_TP_FIRST"
+
 
 @dataclass
 # Cấu hình vốn ban đầu, đồng tiền cơ sở
@@ -21,10 +25,6 @@ class AccountConfig:
 
 
 @dataclass
-# cấu hình sản phẩm giao dịch và tự động tính số units thực tế. 
-# Quy ước cơ bản cho XAUUSD: 1 Lot = 100 ounce vàng -> 0.01 lot = 1 ounce.
-# Hơn nữa Hiểu Lot là số tiền tối thiếu trong tài khoản bằng hoặc lớn hơn số tiền ký quỹ thì sàn mới cấp quyền cho người dùng thực hiện vào lệnh mua/bán
-# Hiện tại: Tạm thời cấu hình hàm này như vậy trong tương lại sẽ linh hoạt phát triển
 class InstrumentConfig:
     symbol: str = "XAUUSD"
     lot_size: float = 0.01
@@ -32,12 +32,16 @@ class InstrumentConfig:
     min_lot: float = 0.01
     max_lot: float = 100.0
     lot_step: float = 0.01
+    point_size: float = 0.01
+    quote_currency: str = "USD"
 
     def __post_init__(self):
         if self.lot_size <= 0 or self.contract_size <= 0:
             raise ValueError("lot_size và contract_size phải lớn hơn 0.")
         if self.min_lot <= 0 or self.max_lot < self.min_lot or self.lot_step <= 0:
             raise ValueError("min_lot, max_lot, lot_step không hợp lệ.")
+        if self.point_size <= 0:
+            raise ValueError("point_size phải lớn hơn 0.")
 
     def lots_to_units(self, quantity: float) -> float:
         return float(quantity) * self.contract_size
@@ -48,10 +52,24 @@ class InstrumentConfig:
 
 
 @dataclass
+class SpreadConfig:
+    spread_price: float = 0.0
+    spread_points: float | None = None
+    price_type: str = "MID"
+
+    def __post_init__(self):
+        if self.spread_price < 0:
+            raise ValueError("spread_price không được âm.")
+        if self.spread_points is not None and self.spread_points < 0:
+            raise ValueError("spread_points không được âm.")
+
+
+@dataclass
 # Tỷ lệ phí hoa hồng
 class FeeConfig:
     fee_rate_per_side: float = 0.00015
     commission_per_lot: float = 0.0
+    commission_mode: str = "ROUND_TURN"
 
     def __post_init__(self):
         if self.fee_rate_per_side < 0 or self.commission_per_lot < 0:
@@ -62,10 +80,11 @@ class FeeConfig:
 # Độ trượt giá thị trường
 class SlippageConfig:
     slippage_price: float = 0.0
+    slippage_rate: float = 0.0
 
     def __post_init__(self):
-        if self.slippage_price < 0:
-            raise ValueError("slippage_price không được âm.")
+        if self.slippage_price < 0 or self.slippage_rate < 0:
+            raise ValueError("slippage_price và slippage_rate không được âm.")
 
 
 @dataclass
@@ -83,16 +102,21 @@ class RiskConfig:
 class EngineConfig:
     account: AccountConfig = field(default_factory=AccountConfig)
     instrument: InstrumentConfig = field(default_factory=InstrumentConfig)
+    spread: SpreadConfig = field(default_factory=SpreadConfig)
     fee: FeeConfig = field(default_factory=FeeConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     bars_per_year: int = 96 * 252  # M15 assumption
     force_close_at_end: bool = True
     reverse_policy: ReversePolicy = ReversePolicy.IGNORE
+    intrabar_conflict_policy: IntrabarConflictPolicy = IntrabarConflictPolicy.WORST_CASE_SL_FIRST
+    limit_penetration: float = 0.0
 
     def __post_init__(self):
         if self.bars_per_year <= 0:
             raise ValueError("bars_per_year phải lớn hơn 0.")
+        if self.limit_penetration < 0:
+            raise ValueError("limit_penetration không được âm.")
 
     @property
     def units(self) -> float:
@@ -119,15 +143,29 @@ class BacktestConfig(EngineConfig):
         symbol: str = "XAUUSD",
         base_currency: str = "USD",
         commission_per_lot: float = 0.0,
+        spread_price: float = 0.0,
+        point_size: float = 0.01,
+        reverse_policy: ReversePolicy = ReversePolicy.IGNORE,
+        intrabar_conflict_policy: IntrabarConflictPolicy = IntrabarConflictPolicy.WORST_CASE_SL_FIRST,
+        limit_penetration: float = 0.0,
     ):
         super().__init__(
             account=AccountConfig(initial_balance=initial_balance, base_currency=base_currency),
-            instrument=InstrumentConfig(symbol=symbol, lot_size=lot_size, contract_size=contract_size),
+            instrument=InstrumentConfig(
+                symbol=symbol,
+                lot_size=lot_size,
+                contract_size=contract_size,
+                point_size=point_size,
+            ),
+            spread=SpreadConfig(spread_price=spread_price),
             fee=FeeConfig(fee_rate_per_side=fee_rate_per_side, commission_per_lot=commission_per_lot),
             slippage=SlippageConfig(slippage_price=slippage_price),
             risk=RiskConfig(stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct),
             bars_per_year=bars_per_year,
             force_close_at_end=force_close_at_end,
+            reverse_policy=reverse_policy,
+            intrabar_conflict_policy=intrabar_conflict_policy,
+            limit_penetration=limit_penetration,
         )
 
     # Property alias để code cũ truy cập trực tiếp

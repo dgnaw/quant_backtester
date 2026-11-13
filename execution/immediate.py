@@ -24,7 +24,13 @@ class ImmediateExecutionModel(ExecutionModel):
         # Khớp lệnh Market theo giá Open của bar (hoặc giá limit chỉ định trước nếu có)
         raw_price = float(order.limit_price) if order.limit_price is not None else float(bar["open"])
         fill_price = self.slippage_model.calculate_fill_price(raw_price, order.side)
-        fee = self.fee_model.calculate_fee(fill_price, order.units)
+        fee = self.fee_model.calculate_fee(
+            fill_price,
+            order.units,
+            quantity=order.quantity,
+            side=order.side,
+        )
+        slip_val = abs(fill_price - raw_price)
 
         self._fill_counter += 1
         fill = Fill(
@@ -37,8 +43,9 @@ class ImmediateExecutionModel(ExecutionModel):
             quantity=order.quantity,
             units=order.units,
             fee=fee,
-            slippage=abs(fill_price - raw_price),
+            slippage=slip_val,
             reason=order.reason,
+            metadata={"slippage_cost": slip_val * order.units},
         )
 
         order.status = OrderStatus.FILLED

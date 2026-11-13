@@ -100,6 +100,55 @@ class SimpleRiskManager(BaseRiskManager):
             take_profit_pct=final_tp_pct,
         )
 
+    def finalize_entry_sl_tp(
+        self,
+        order,
+        proposed_fill_price: float,
+    ) -> tuple[bool, str, float | None, float | None]:
+        """
+        Giai đoạn 2 của Two-Phase Fill (Propose -> Validate/Finalize -> Commit):
+        Tính toán và kiểm tra tính hợp lệ của SL/TP dựa trên giá Fill thực tế (proposed_fill_price).
+        """
+        fill_p = float(proposed_fill_price)
+        if not math.isfinite(fill_p) or fill_p <= 0.0:
+            self.last_reject_reason = "INVALID_FILL_PRICE"
+            return False, "INVALID_FILL_PRICE", None, None
+
+        sl_p = order.stop_loss_price
+        tp_p = order.take_profit_price
+        sl_pct = order.stop_loss_pct
+        tp_pct = order.take_profit_pct
+
+        if sl_p is None and sl_pct is None and self.config.stop_loss_pct > 0:
+            sl_pct = self.config.stop_loss_pct
+        if tp_p is None and tp_pct is None and self.config.take_profit_pct > 0:
+            tp_pct = self.config.take_profit_pct
+
+        if sl_p is None and sl_pct is not None and sl_pct > 0:
+            sl_p = fill_p * (1.0 - sl_pct) if order.side == OrderSide.BUY else fill_p * (1.0 + sl_pct)
+
+        if tp_p is None and tp_pct is not None and tp_pct > 0:
+            tp_p = fill_p * (1.0 + tp_pct) if order.side == OrderSide.BUY else fill_p * (1.0 - tp_pct)
+
+        if sl_p is not None:
+            if order.side == OrderSide.BUY and sl_p >= fill_p:
+                self.last_reject_reason = "INVALID_SL_AT_FILL_PRICE"
+                return False, "INVALID_SL_AT_FILL_PRICE", None, None
+            if order.side == OrderSide.SELL and sl_p <= fill_p:
+                self.last_reject_reason = "INVALID_SL_AT_FILL_PRICE"
+                return False, "INVALID_SL_AT_FILL_PRICE", None, None
+
+        if tp_p is not None:
+            if order.side == OrderSide.BUY and tp_p <= fill_p:
+                self.last_reject_reason = "INVALID_TP_AT_FILL_PRICE"
+                return False, "INVALID_TP_AT_FILL_PRICE", None, None
+            if order.side == OrderSide.SELL and tp_p >= fill_p:
+                self.last_reject_reason = "INVALID_TP_AT_FILL_PRICE"
+                return False, "INVALID_TP_AT_FILL_PRICE", None, None
+
+        return True, "OK", sl_p, tp_p
+
+
     def _resolve_sl_tp_prices(
         self,
         side: OrderSide,

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from quant_backtester.config import ReversePolicy
-from quant_backtester.models.order import OrderIntent, OrderSide, OrderType
+from quant_backtester.models.order import OrderIntent, OrderOrigin, OrderSide, OrderType, TimeInForce
 from quant_backtester.models.signal import Signal, SignalType
 from quant_backtester.portfolio.position import PositionSide, PositionView
 
@@ -79,22 +79,48 @@ class SignalTranslator:
         directives = dict(raw_directives) if isinstance(raw_directives, Mapping) else {}
 
         qty = directives.get("quantity", self.default_quantity)
+        limit_price = directives.get("limit_price")
+        stop_price = directives.get("stop_price")
         sl_price = directives.get("stop_loss_price")
         tp_price = directives.get("take_profit_price")
         sl_pct = directives.get("stop_loss_pct")
         tp_pct = directives.get("take_profit_pct")
         trailing_pct = directives.get("trailing_stop_pct")
+        expire_bars = directives.get("expire_after_bars")
+        if expire_bars is not None:
+            expire_bars = int(expire_bars)
+
+        raw_otype = directives.get("order_type", OrderType.MARKET)
+        if isinstance(raw_otype, OrderType):
+            otype = raw_otype
+        elif isinstance(raw_otype, str):
+            otype = OrderType[raw_otype.strip().upper()]
+        else:
+            otype = OrderType.MARKET
+
+        raw_tif = directives.get("time_in_force")
+        if isinstance(raw_tif, TimeInForce):
+            tif = raw_tif
+        elif isinstance(raw_tif, str):
+            tif = TimeInForce[raw_tif.strip().upper()]
+        else:
+            tif = None
 
         return OrderIntent(
             symbol=signal.symbol,
             side=side,
-            order_type=OrderType.MARKET,
+            order_type=otype,
             quantity=qty,
+            limit_price=limit_price,
+            stop_price=stop_price,
             stop_loss_price=sl_price,
             take_profit_price=tp_price,
             stop_loss_pct=sl_pct,
             take_profit_pct=tp_pct,
             trailing_stop_pct=trailing_pct,
+            time_in_force=tif,
+            expire_after_bars=expire_bars,
+            origin=OrderOrigin.STRATEGY_ENTRY,
             reason=reason,
             metadata={"signal_time": signal.time, "directives": directives},
         )
@@ -114,6 +140,7 @@ class SignalTranslator:
             side=close_side,
             order_type=OrderType.MARKET,
             quantity=self.default_quantity,
+            origin=OrderOrigin.STRATEGY_EXIT,
             reason=reason,
             metadata=meta,
         )

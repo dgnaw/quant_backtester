@@ -16,6 +16,7 @@ class BacktestResult:
     strategy_parameters: dict[str, Any] = field(default_factory=dict)
     signal_log: list[dict[str, Any]] = field(default_factory=list)
     effective_trade_start: int = 0
+    order_events: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def final_balance(self) -> float:
@@ -34,6 +35,7 @@ class BacktestResult:
             "equity": self.equity,
             "trades": self.trades,
             "orders": self.orders,
+            "order_events": self.order_events,
             "metrics": self.metrics,
             "final_balance": self.final_balance,
             "final_equity": self.final_equity,

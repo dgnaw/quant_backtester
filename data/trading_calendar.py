@@ -61,6 +61,11 @@ class TradingCalendar:
             return False
         return self.daily_break_start_hour <= ts.hour < self.daily_break_end_hour
 
+    def session_id(self, ts: pd.Timestamp) -> str:
+        """Trả về định danh phiên giao dịch theo ngày (YYYY-MM-DD) phục vụ lệnh TimeInForce.DAY."""
+        return pd.Timestamp(ts).strftime("%Y-%m-%d")
+
+
 
 class MissingCandleDetector:
     """

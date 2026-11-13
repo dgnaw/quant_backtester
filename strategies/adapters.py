@@ -19,11 +19,14 @@ REQUIRED_SIGNAL_COLUMNS = {
 
 DIRECTIVE_COLUMNS = (
     "quantity",
+    "limit_price",
+    "stop_price",
     "stop_loss_price",
     "take_profit_price",
     "stop_loss_pct",
     "take_profit_pct",
     "trailing_stop_pct",
+    "expire_after_bars",
 )
 
 
