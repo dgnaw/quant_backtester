@@ -17,9 +17,9 @@ from .execution.spread import FixedSpreadModel, SpreadModel, ZeroSpreadModel
 from .execution.fee import BaseFeeModel, CompositeFeeModel, FixedCommissionModel, PercentageFeeModel, ZeroFeeModel
 from .execution.slippage import BaseSlippageModel, FixedSlippageModel, PercentageSlippageModel, ZeroSlippageModel
 from .execution.order_manager import OrderManager
-from .risk.base import BaseRiskManager
+from .risk.base import BaseRiskManager, RiskContext
 from .risk.simple import SimpleRiskManager
-from .models.order import Order, OrderIntent, OrderOrigin, OrderSide, OrderStatus, OrderType
+from .models.order import ExecutionPhase, Order, OrderIntent, OrderOrigin, OrderSide, OrderStatus, OrderType
 from .models.quote import QuoteBar
 from .models.result import BacktestResult
 from .models.signal import Signal, SignalType
@@ -58,10 +58,29 @@ class BacktestEngine:
                 limit_penetration=self.config.limit_penetration,
                 contract_size=self.config.instrument.contract_size,
             )
-        self.risk_manager = risk_manager if risk_manager is not None else SimpleRiskManager(
-            config=self.config.risk,
-            instrument_config=self.config.instrument,
+        eff_leverage = (
+            self.config.risk.leverage
+            if self.config.risk.leverage is not None
+            else self.config.account.leverage
         )
+        if risk_manager is not None:
+            self.risk_manager = risk_manager
+            if isinstance(self.risk_manager, SimpleRiskManager):
+                if self.risk_manager.fee_model is None and hasattr(self.execution_model, "fee_model"):
+                    self.risk_manager.fee_model = self.execution_model.fee_model
+                    self.risk_manager.estimator.fee_model = self.execution_model.fee_model
+                if self.risk_manager.slippage_model is None and hasattr(self.execution_model, "slippage_model"):
+                    self.risk_manager.slippage_model = self.execution_model.slippage_model
+                    self.risk_manager.estimator.slippage_model = self.execution_model.slippage_model
+        else:
+            self.risk_manager = SimpleRiskManager(
+                config=self.config.risk,
+                instrument_config=self.config.instrument,
+                account_currency=self.config.account.account_currency,
+                default_leverage=eff_leverage,
+                fee_model=getattr(self.execution_model, "fee_model", None),
+                slippage_model=getattr(self.execution_model, "slippage_model", None),
+            )
 
     @staticmethod
     def _build_spread_model(cfg: EngineConfig) -> SpreadModel:
@@ -156,20 +175,34 @@ class BacktestEngine:
         balance: float,
         equity: float,
         ref_price: float | None,
+        context: RiskContext | None = None,
     ) -> OrderIntent | None:
         try:
-            return risk_manager.approve_order_intent(intent, balance, equity, reference_price=ref_price)
+            return risk_manager.approve_order_intent(
+                intent, balance, equity, reference_price=ref_price, context=context
+            )
         except TypeError:
-            return risk_manager.approve_order_intent(intent, balance, equity)
+            try:
+                return risk_manager.approve_order_intent(
+                    intent, balance, equity, reference_price=ref_price
+                )
+            except TypeError:
+                return risk_manager.approve_order_intent(intent, balance, equity)
 
     @staticmethod
     def _finalize_sl_tp(
         risk_manager: BaseRiskManager,
         order: Order,
         proposed_fill_price: float,
+        context: RiskContext | None = None,
     ) -> tuple[bool, str, float | None, float | None]:
         if hasattr(risk_manager, "finalize_entry_sl_tp"):
-            return risk_manager.finalize_entry_sl_tp(order, proposed_fill_price)
+            try:
+                return risk_manager.finalize_entry_sl_tp(
+                    order, proposed_fill_price, context=context
+                )
+            except TypeError:
+                return risk_manager.finalize_entry_sl_tp(order, proposed_fill_price)
         sl_p = order.stop_loss_price
         tp_p = order.take_profit_price
         if sl_p is None and order.stop_loss_pct:
@@ -177,6 +210,48 @@ class BacktestEngine:
         if tp_p is None and order.take_profit_pct:
             tp_p = proposed_fill_price * (1.0 + order.take_profit_pct) if order.side == OrderSide.BUY else proposed_fill_price * (1.0 - order.take_profit_pct)
         return True, "OK", sl_p, tp_p
+
+    def _build_risk_context(
+        self,
+        bar_time: pd.Timestamp,
+        bar_index: int,
+        account: Account,
+        current_equity: float,
+        portfolio: Portfolio,
+        order_manager: OrderManager,
+        quote_bar: QuoteBar | None = None,
+        ref_price: float | None = None,
+    ) -> RiskContext:
+        symbol = self.config.instrument.symbol
+        mark_prices: dict[str, float] = {}
+        for sym, pos in portfolio.active_positions.items():
+            if not pos.is_flat:
+                if quote_bar is not None and sym == symbol:
+                    mark_prices[sym] = quote_bar.bid_close if pos.is_long else quote_bar.ask_close
+                else:
+                    mark_prices[sym] = float(pos.avg_entry_price)
+        if quote_bar is not None and symbol not in mark_prices:
+            mark_prices[symbol] = quote_bar.mid_close
+
+        pending_entries = [
+            o
+            for o in order_manager.orders
+            if o.status == OrderStatus.PENDING and o.origin == OrderOrigin.STRATEGY_ENTRY
+        ]
+        return RiskContext(
+            timestamp=bar_time,
+            bar_index=bar_index,
+            current_balance=account.balance,
+            current_equity=current_equity,
+            net_deposits=account.net_deposits,
+            reference_price=ref_price,
+            quote_bar=quote_bar,
+            active_positions=portfolio.active_positions,
+            pending_entry_orders=pending_entries,
+            mark_prices=mark_prices,
+            instrument_by_symbol=portfolio.instrument_by_symbol,
+            account_currency=account.account_currency,
+        )
 
     @staticmethod
     def _call_intrabar_exit(
@@ -221,6 +296,9 @@ class BacktestEngine:
         current_equity: float,
         order_manager: OrderManager,
         strategy: Strategy,
+        portfolio: Portfolio | None = None,
+        account: Account | None = None,
+        quote_bar: QuoteBar | None = None,
     ) -> Order | None:
         cfg = self.config
         if intent.origin == OrderOrigin.STRATEGY_EXIT or intent.reason == "STRATEGY_EXIT":
@@ -264,8 +342,21 @@ class BacktestEngine:
         else:
             ref_price = default_ref_price
 
+        risk_ctx: RiskContext | None = None
+        if portfolio is not None and account is not None:
+            risk_ctx = self._build_risk_context(
+                bar_time=bar_time,
+                bar_index=bar_index,
+                account=account,
+                current_equity=current_equity,
+                portfolio=portfolio,
+                order_manager=order_manager,
+                quote_bar=quote_bar,
+                ref_price=ref_price,
+            )
+
         approved_intent = self._call_approve(
-            self.risk_manager, intent, account_balance, current_equity, ref_price
+            self.risk_manager, intent, account_balance, current_equity, ref_price, context=risk_ctx
         )
         if approved_intent is not None:
             qty_lots = approved_intent.quantity if approved_intent.quantity is not None else cfg.instrument.lot_size
@@ -307,6 +398,10 @@ class BacktestEngine:
     ) -> BacktestResult:
         if hasattr(strategy, "reset"):
             strategy.reset()
+        if hasattr(self.risk_manager, "reset_for_run"):
+            self.risk_manager.reset_for_run()
+        if hasattr(self.execution_model, "reset_for_run"):
+            self.execution_model.reset_for_run()
 
         cfg = self.config
         symbol = cfg.instrument.symbol
@@ -357,11 +452,15 @@ class BacktestEngine:
             account_currency=cfg.account.account_currency,
         )
         account.validate_currency_compatibility(cfg.instrument.quote_currency)
+        eff_leverage = (
+            cfg.risk.leverage if cfg.risk.leverage is not None else cfg.account.leverage
+        )
         portfolio = Portfolio(
             account=account,
             instrument_config=cfg.instrument,
             default_position_mode=cfg.default_position_mode,
             position_mode_by_symbol=cfg.position_mode_by_symbol,
+            default_leverage=eff_leverage,
         )
         order_manager = OrderManager()
         translator = SignalTranslator(
@@ -387,6 +486,17 @@ class BacktestEngine:
                     "position": 0,
                 })
                 if i == effective_trade_start - 1 and i >= warmup - 1 and i + 1 < len(df_bars):
+                    if hasattr(self.risk_manager, "update_portfolio_state"):
+                        ctx_pre = self._build_risk_context(
+                            bar_time=bar_time,
+                            bar_index=i,
+                            account=account,
+                            current_equity=account.balance,
+                            portfolio=portfolio,
+                            order_manager=order_manager,
+                            quote_bar=quote_bar,
+                        )
+                        self.risk_manager.update_portfolio_state(ctx_pre)
                     sig = self._emit_bar_signal(exec_mode, strategy, signal_list, i, row, df_bars, symbol, pos.to_view())
                     intent = translator.translate(sig, pos.to_view())
                     if intent is not None:
@@ -402,6 +512,9 @@ class BacktestEngine:
                             current_equity=account.balance,
                             order_manager=order_manager,
                             strategy=strategy,
+                            portfolio=portfolio,
+                            account=account,
+                            quote_bar=quote_bar,
                         )
                         if created is not None and created.origin == OrderOrigin.STRATEGY_EXIT:
                             pending_exit_order = created
@@ -462,6 +575,9 @@ class BacktestEngine:
                                         current_equity=account.balance,
                                         order_manager=order_manager,
                                         strategy=strategy,
+                                        portfolio=portfolio,
+                                        account=account,
+                                        quote_bar=quote_bar,
                                     )
                 pending_exit_order = None
 
@@ -475,8 +591,18 @@ class BacktestEngine:
             if can_enter_open and entry_order is not None:
                 entry_open_prop = exec_model.propose_entry_open(entry_order, quote_bar, bar_index=i)
                 if entry_open_prop is not None:
+                    ctx_open = self._build_risk_context(
+                        bar_time=bar_time,
+                        bar_index=i,
+                        account=account,
+                        current_equity=portfolio.get_equity({symbol: quote_bar}),
+                        portfolio=portfolio,
+                        order_manager=order_manager,
+                        quote_bar=quote_bar,
+                        ref_price=entry_open_prop.fill_price,
+                    )
                     ok, reason, sl_p, tp_p = self._finalize_sl_tp(
-                        self.risk_manager, entry_order, entry_open_prop.fill_price
+                        self.risk_manager, entry_order, entry_open_prop.fill_price, context=ctx_open
                     )
                     if ok:
                         fill = exec_model.commit_proposal(
@@ -519,8 +645,18 @@ class BacktestEngine:
             if can_enter_range and entry_order is not None:
                 range_entry_prop = exec_model.propose_entry_range(entry_order, quote_bar, bar_index=i)
                 if range_entry_prop is not None:
+                    ctx_range = self._build_risk_context(
+                        bar_time=bar_time,
+                        bar_index=i,
+                        account=account,
+                        current_equity=portfolio.get_equity({symbol: quote_bar}),
+                        portfolio=portfolio,
+                        order_manager=order_manager,
+                        quote_bar=quote_bar,
+                        ref_price=range_entry_prop.fill_price,
+                    )
                     ok, reason, sl_p, tp_p = self._finalize_sl_tp(
-                        self.risk_manager, entry_order, range_entry_prop.fill_price
+                        self.risk_manager, entry_order, range_entry_prop.fill_price, context=ctx_range
                     )
                     if ok:
                         fill = exec_model.commit_proposal(
@@ -549,9 +685,109 @@ class BacktestEngine:
                 bar_index=i, timestamp=bar_time, next_timestamp=next_bar_time
             )
 
-            # 3.2 Mark-to-Market Equity at Bar Close (Long @ Bid Close, Short @ Ask Close)
+            # 3.2 Mark-to-Market Equity & Risk State Update at Bar Close
             pos = portfolio.get_position(symbol)
             current_equity = portfolio.get_equity({symbol: quote_bar})
+
+            if hasattr(self.risk_manager, "update_portfolio_state"):
+                ctx_close = self._build_risk_context(
+                    bar_time=bar_time,
+                    bar_index=i,
+                    account=account,
+                    current_equity=current_equity,
+                    portfolio=portfolio,
+                    order_manager=order_manager,
+                    quote_bar=quote_bar,
+                )
+                margin_snap = self.risk_manager.update_portfolio_state(ctx_close)
+
+                # 3.2a Margin Stop-Out Forced Liquidation
+                if margin_snap.is_stop_out and not pos.is_flat:
+                    if hasattr(self.risk_manager, "audit_log"):
+                        self.risk_manager.audit_log.record_event(
+                            event_type="MARGIN_STOP_OUT",
+                            timestamp=bar_time,
+                            symbol=symbol,
+                            reject_code="MARGIN_STOP_OUT",
+                            details=(
+                                f"margin_level_pct={margin_snap.margin_level_pct:.2f}% <= "
+                                f"stop_out={cfg.risk.stop_out_level_pct}%"
+                            ),
+                        )
+                    stop_out_positions = self.risk_manager.margin_model.select_positions_for_stop_out(
+                        active_positions=portfolio.active_positions,
+                        mark_prices=ctx_close.mark_prices,
+                        instrument_by_symbol=portfolio.instrument_by_symbol,
+                        default_instrument=cfg.instrument,
+                        account_currency=account.account_currency,
+                    )
+                    for so_pos in stop_out_positions:
+                        if so_pos.is_flat:
+                            continue
+                        so_prop = exec_model.propose_forced_liquidation(
+                            so_pos,
+                            quote_bar,
+                            bar_index=i,
+                            phase=ExecutionPhase.CLOSE,
+                            reason="MARGIN_STOP_OUT",
+                        )
+                        if so_prop is not None:
+                            so_fill = exec_model.commit_proposal(so_prop, order_manager, portfolio)
+                            if hasattr(strategy, "on_fill"):
+                                strategy.on_fill(FillView.from_fill(so_fill))
+                        current_equity = portfolio.get_equity({symbol: quote_bar})
+                        ctx_recheck = self._build_risk_context(
+                            bar_time=bar_time,
+                            bar_index=i,
+                            account=account,
+                            current_equity=current_equity,
+                            portfolio=portfolio,
+                            order_manager=order_manager,
+                            quote_bar=quote_bar,
+                        )
+                        margin_snap = self.risk_manager.update_portfolio_state(ctx_recheck)
+                        if not margin_snap.is_stop_out:
+                            break
+                    pos = portfolio.get_position(symbol)
+                    if pending_exit_order is not None and pending_exit_order.status == OrderStatus.PENDING and pos.is_flat:
+                        order_manager.cancel_order(
+                            pending_exit_order,
+                            timestamp=bar_time,
+                            bar_index=i,
+                            reason="POSITION_ALREADY_CLOSED",
+                        )
+                        pending_exit_order = None
+
+                # 3.2b Max Drawdown Forced Liquidation (when liquidate_on_max_drawdown=True)
+                if (
+                    hasattr(self.risk_manager, "drawdown_monitor")
+                    and self.risk_manager.drawdown_monitor.consume_liquidation_request()
+                ):
+                    for dd_pos in list(portfolio.active_positions.values()):
+                        if dd_pos.is_flat:
+                            continue
+                        dd_prop = exec_model.propose_forced_liquidation(
+                            dd_pos,
+                            quote_bar,
+                            bar_index=i,
+                            phase=ExecutionPhase.CLOSE,
+                            reason="MAX_DRAWDOWN_LIQUIDATION",
+                        )
+                        if dd_prop is not None:
+                            dd_fill = exec_model.commit_proposal(dd_prop, order_manager, portfolio)
+                            if hasattr(strategy, "on_fill"):
+                                strategy.on_fill(FillView.from_fill(dd_fill))
+                    pos = portfolio.get_position(symbol)
+                    current_equity = portfolio.get_equity({symbol: quote_bar})
+                    if pending_exit_order is not None and pending_exit_order.status == OrderStatus.PENDING and pos.is_flat:
+                        order_manager.cancel_order(
+                            pending_exit_order,
+                            timestamp=bar_time,
+                            bar_index=i,
+                            reason="POSITION_ALREADY_CLOSED",
+                        )
+                        pending_exit_order = None
+
             position_code = 1 if pos.is_long else (-1 if pos.is_short else 0)
             equity_rows.append({
                 "time": row.time,
@@ -577,6 +813,9 @@ class BacktestEngine:
                         current_equity=current_equity,
                         order_manager=order_manager,
                         strategy=strategy,
+                        portfolio=portfolio,
+                        account=account,
+                        quote_bar=quote_bar,
                     )
                     if created is not None and created.origin == OrderOrigin.STRATEGY_EXIT:
                         pending_exit_order = created
@@ -611,6 +850,11 @@ class BacktestEngine:
             else portfolio.open_positions_to_dataframe()
         )
         allocations_df = portfolio.trade_allocations_to_dataframe()
+        risk_events_df = (
+            self.risk_manager.audit_log.to_dataframe()
+            if hasattr(self.risk_manager, "audit_log")
+            else pd.DataFrame()
+        )
 
         metrics = calculate_metrics(
             {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
@@ -631,6 +875,7 @@ class BacktestEngine:
             ledger=ledger_df,
             open_positions=open_positions_df,
             trade_allocations=allocations_df,
+            risk_events=risk_events_df,
         )
 
     def _run_custom_execution_model(
@@ -654,11 +899,15 @@ class BacktestEngine:
             account_currency=cfg.account.account_currency,
         )
         account.validate_currency_compatibility(cfg.instrument.quote_currency)
+        eff_leverage = (
+            cfg.risk.leverage if cfg.risk.leverage is not None else cfg.account.leverage
+        )
         portfolio = Portfolio(
             account=account,
             instrument_config=cfg.instrument,
             default_position_mode=cfg.default_position_mode,
             position_mode_by_symbol=cfg.position_mode_by_symbol,
+            default_leverage=eff_leverage,
         )
         order_manager = OrderManager()
         translator = SignalTranslator(
@@ -827,6 +1076,11 @@ class BacktestEngine:
         else:
             open_positions_df = portfolio.open_positions_to_dataframe()
         allocations_df = portfolio.trade_allocations_to_dataframe()
+        risk_events_df = (
+            self.risk_manager.audit_log.to_dataframe()
+            if hasattr(self.risk_manager, "audit_log")
+            else pd.DataFrame()
+        )
 
         metrics = calculate_metrics(
             {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
@@ -847,4 +1101,5 @@ class BacktestEngine:
             ledger=ledger_df,
             open_positions=open_positions_df,
             trade_allocations=allocations_df,
+            risk_events=risk_events_df,
         )

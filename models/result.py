@@ -20,6 +20,7 @@ class BacktestResult:
     ledger: pd.DataFrame = field(default_factory=pd.DataFrame)
     open_positions: pd.DataFrame = field(default_factory=pd.DataFrame)
     trade_allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    risk_events: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def final_balance(self) -> float:
@@ -42,6 +43,7 @@ class BacktestResult:
             "ledger": self.ledger,
             "open_positions": self.open_positions,
             "trade_allocations": self.trade_allocations,
+            "risk_events": self.risk_events,
             "metrics": self.metrics,
             "final_balance": self.final_balance,
             "final_equity": self.final_equity,

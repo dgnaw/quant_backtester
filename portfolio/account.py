@@ -27,6 +27,7 @@ class Account:
         self.realized_fees: float = 0.0
         self.open_position_entry_fees: float = 0.0
         self.unrealized_pnl: float = 0.0
+        self.used_margin: float = 0.0
 
     @property
     def account_currency(self) -> str:
@@ -43,6 +44,16 @@ class Account:
     @property
     def equity(self) -> float:
         return self.balance + self.unrealized_pnl
+
+    @property
+    def free_margin(self) -> float:
+        return self.equity - self.used_margin
+
+    @property
+    def margin_level_pct(self) -> float:
+        if self.used_margin <= 0.0:
+            return float("inf")
+        return (self.equity / self.used_margin) * 100.0
 
     def validate_currency_compatibility(self, quote_currency: str) -> None:
         if str(quote_currency).strip().upper() != self.account_currency.strip().upper():

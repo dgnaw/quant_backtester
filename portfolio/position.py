@@ -94,6 +94,10 @@ class Position:
         self.average_entry_price = float(val)
 
     @property
+    def avg_entry_price(self) -> float:
+        return self.average_entry_price
+
+    @property
     def stop_loss(self) -> float | None:
         return self.stop_loss_price
 

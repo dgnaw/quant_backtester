@@ -88,9 +88,11 @@ class Portfolio:
         default_position_mode: PositionMode = PositionMode.NETTING_SINGLE,
         position_mode_by_symbol: dict[str, PositionMode] | None = None,
         instrument_by_symbol: dict[str, InstrumentConfig] | None = None,
+        default_leverage: float = 100.0,
     ):
         self.account = account
         self.instrument_config = instrument_config
+        self.default_leverage = float(default_leverage) if default_leverage > 0 else 100.0
         self.instrument_by_symbol: dict[str, InstrumentConfig] = dict(instrument_by_symbol) if instrument_by_symbol else {}
         if instrument_config is not None:
             self.account.validate_currency_compatibility(instrument_config.quote_currency)
@@ -198,6 +200,7 @@ class Portfolio:
             "account_realized_fees": self.account.realized_fees,
             "account_open_position_entry_fees": self.account.open_position_entry_fees,
             "account_unrealized_pnl": self.account.unrealized_pnl,
+            "account_used_margin": self.account.used_margin,
             "len_ledger_entries": len(self.account.ledger.entries),
             "ledger_counter": self.account.ledger._entry_counter,
         }
@@ -227,8 +230,32 @@ class Portfolio:
         self.account.realized_fees = snap["account_realized_fees"]
         self.account.open_position_entry_fees = snap["account_open_position_entry_fees"]
         self.account.unrealized_pnl = snap["account_unrealized_pnl"]
+        self.account.used_margin = snap["account_used_margin"]
         del self.account.ledger.entries[snap["len_ledger_entries"]:]
         self.account.ledger._entry_counter = snap["ledger_counter"]
+
+    def _update_used_margin(
+        self,
+        current_prices: Mapping[str, float | QuoteBar] | None = None,
+    ) -> float:
+        total_margin = 0.0
+        for symbol, pos in self.active_positions.items():
+            if pos.is_flat or pos.units <= 0.0:
+                continue
+            inst = self._get_instrument(symbol)
+            lev = float(inst.leverage) if inst.leverage is not None else self.default_leverage
+            if current_prices is not None and symbol in current_prices:
+                pq = current_prices[symbol]
+                if isinstance(pq, QuoteBar):
+                    mark_p = pq.bid_close if pos.is_long else pq.ask_close
+                else:
+                    mark_p = float(pq)
+            else:
+                mark_p = float(pos.avg_entry_price)
+            if lev > 0.0 and mark_p > 0.0:
+                total_margin += (pos.units * mark_p) / lev
+        self.account.used_margin = total_margin
+        return total_margin
 
     def on_fill(
         self,
@@ -462,9 +489,10 @@ class Portfolio:
             self._restore_state(snap)
             raise
 
-        # Commit thành công -> đánh dấu fill_id đã xử lý
+        # Commit thành công -> đánh dấu fill_id đã xử lý và cập nhật used_margin
         self._processed_fill_ids.add(fill.fill_id)
         self._fill_process_count += 1
+        self._update_used_margin()
 
     def get_equity(self, current_prices: Mapping[str, float | QuoteBar]) -> float:
         """
@@ -482,6 +510,7 @@ class Portfolio:
                     mark_p = float(price_or_quote)
                 total_unrealized += pos.unrealized_pnl(mark_p)
         self.account.unrealized_pnl = total_unrealized
+        self._update_used_margin(current_prices)
         return self.account.equity
 
     # -------------------------------------------------------------------------

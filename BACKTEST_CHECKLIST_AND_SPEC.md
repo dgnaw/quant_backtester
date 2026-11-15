@@ -69,15 +69,15 @@ Tài liệu này đóng vai trò là **Kim chỉ nam kiến trúc (Architecture 
 - [x] Có quy tắc đóng vị thế cuối kỳ.
 - [x] Xác định rõ hỗ trợ một hay nhiều vị thế trên mỗi symbol.
 
-### F. Risk Management và Portfolio (P1) — [0/8]
-- [ ] Position sizing theo risk amount và stop distance.
-- [ ] Giới hạn rủi ro tối đa mỗi giao dịch.
-- [ ] Daily loss limit.
-- [ ] Maximum drawdown limit.
-- [ ] Giới hạn exposure theo symbol và toàn tài khoản.
-- [ ] Mô phỏng margin, leverage và margin call.
-- [ ] Quản lý rủi ro tương quan giữa các vị thế.
-- [ ] Có cơ chế ngừng tạo lệnh khi vượt giới hạn rủi ro.
+### F. Risk Management và Portfolio (P1) — [8/8] Hoàn thành
+- [x] Position sizing theo risk amount và stop distance.
+- [x] Giới hạn rủi ro tối đa mỗi giao dịch.
+- [x] Daily loss limit.
+- [x] Maximum drawdown limit.
+- [x] Giới hạn exposure theo symbol và toàn tài khoản.
+- [x] Mô phỏng margin, leverage và margin call.
+- [x] Quản lý rủi ro tương quan giữa các vị thế.
+- [x] Có cơ chế ngừng tạo lệnh khi vượt giới hạn rủi ro.
 
 ### G. Accounting và Performance Analytics (P0) — [0/8]
 - [ ] Có ledger ghi nhận cash flow và giao dịch.

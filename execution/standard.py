@@ -73,6 +73,10 @@ class StandardExecutionModel(ExecutionModel):
         self.contract_size = float(contract_size) if contract_size > 0 else 100.0
         self._fill_counter = 0
 
+    def reset_for_run(self) -> None:
+        """Reset bộ đếm fill_id cho mỗi lần chạy Backtest độc lập."""
+        self._fill_counter = 0
+
     def _apply_slippage(self, base_price: float, side: OrderSide) -> tuple[float, float]:
         fill_p = self.slippage_model.calculate_fill_price(base_price, side)
         slip = abs(fill_p - base_price)
@@ -498,7 +502,7 @@ class StandardExecutionModel(ExecutionModel):
         return None
 
     # -------------------------------------------------------------------------
-    # 4. PROPOSE END_OF_TEST CLOSE
+    # 4. PROPOSE END_OF_TEST CLOSE & FORCED LIQUIDATION (STOP-OUT / MAX DD)
     # -------------------------------------------------------------------------
     def propose_end_of_test_close(self, position: Position, quote_bar: QuoteBar, bar_index: int) -> ExecutionProposal | None:
         if position.is_flat:
@@ -520,6 +524,43 @@ class StandardExecutionModel(ExecutionModel):
             slippage=slip,
             origin=OrderOrigin.END_OF_TEST,
             reason="END_OF_TEST",
+        )
+
+    def propose_forced_liquidation(
+        self,
+        position: Position,
+        quote_bar: QuoteBar,
+        bar_index: int,
+        phase: ExecutionPhase = ExecutionPhase.CLOSE,
+        reason: str = "MARGIN_STOP_OUT",
+    ) -> ExecutionProposal | None:
+        """
+        Propose forced liquidation of an open position due to Margin Stop-Out
+        or Max Drawdown Circuit Breaker.
+        Applies market Bid/Ask + slippage + fee.
+        """
+        if position.is_flat:
+            return None
+        close_side = OrderSide.SELL if position.is_long else OrderSide.BUY
+        if phase == ExecutionPhase.OPEN:
+            base_p = quote_bar.bid_open if position.is_long else quote_bar.ask_open
+        else:
+            base_p = quote_bar.bid_close if position.is_long else quote_bar.ask_close
+        fill_p, slip = self._apply_slippage(base_p, close_side)
+        qty_lots = position.units / self.contract_size
+        return ExecutionProposal(
+            symbol=position.symbol,
+            time=quote_bar.time,
+            bar_index=bar_index,
+            phase=phase,
+            side=close_side,
+            quantity=qty_lots,
+            units=position.units,
+            base_price=base_p,
+            fill_price=fill_p,
+            slippage=slip,
+            origin=OrderOrigin.PROTECTIVE_SL,
+            reason=reason,
         )
 
     # -------------------------------------------------------------------------

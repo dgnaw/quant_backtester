@@ -78,17 +78,20 @@ class FixedCommissionModel(BaseFeeModel):
         mode: str = "ROUND_TURN",
         contract_size: float = 100.0,
         currency: str = "USD",
+        min_fee: float = 0.0,
     ):
         amt = float(amount_per_lot)
         if not math.isfinite(amt) or amt < 0.0:
             raise ValueError("amount_per_lot phải hữu hạn và >= 0.")
-        m = str(mode).strip().upper()
+        raw_mode = mode.value if hasattr(mode, "value") else mode
+        m = str(raw_mode).strip().upper()
         if m not in ("PER_SIDE", "ROUND_TURN"):
             raise ValueError(f"Chế độ commission không hợp lệ: {mode!r}. Chỉ hỗ trợ PER_SIDE hoặc ROUND_TURN.")
         self.amount_per_lot = amt
         self.mode = m
         self.contract_size = float(contract_size) if contract_size > 0 else 100.0
         self.currency = currency
+        self.min_fee = max(0.0, float(min_fee))
 
     def calculate_fee(
         self,
@@ -100,9 +103,13 @@ class FixedCommissionModel(BaseFeeModel):
         is_opening: bool = True,
     ) -> float:
         lots = float(quantity) if quantity is not None else (abs(float(units)) / self.contract_size)
+        if lots <= 0.0:
+            return 0.0
         if self.mode == "ROUND_TURN":
-            return self.amount_per_lot * lots / 2.0
-        return self.amount_per_lot * lots
+            raw = self.amount_per_lot * lots / 2.0
+        else:
+            raw = self.amount_per_lot * lots
+        return max(self.min_fee, raw)
 
 
 class CompositeFeeModel(BaseFeeModel):

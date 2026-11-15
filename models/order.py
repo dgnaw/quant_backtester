@@ -177,5 +177,9 @@ class Order:
         return self.time
 
     @property
+    def price(self) -> float | None:
+        return self.limit_price if self.limit_price is not None else self.stop_price
+
+    @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_ORDER_STATUSES
