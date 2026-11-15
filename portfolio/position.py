@@ -184,6 +184,54 @@ class Position:
             raise ValueError("slippage_cost không được âm.")
         return p, f, s
 
+    @staticmethod
+    def _resolve_entry_risk(
+        side: PositionSide,
+        price: float,
+        units: float,
+        fee: float,
+        stop_loss_price: float | None,
+        explicit_initial_risk: float | None,
+    ) -> float | None:
+        if explicit_initial_risk is not None:
+            if (
+                not isinstance(explicit_initial_risk, bool)
+                and isinstance(explicit_initial_risk, (int, float))
+                and math.isfinite(float(explicit_initial_risk))
+                and float(explicit_initial_risk) > 0.0
+            ):
+                return float(explicit_initial_risk)
+            return None
+        if stop_loss_price is None:
+            return None
+        if (
+            isinstance(stop_loss_price, bool)
+            or not isinstance(stop_loss_price, (int, float))
+            or not math.isfinite(float(stop_loss_price))
+        ):
+            return None
+        sl = float(stop_loss_price)
+        if sl <= 0.0:
+            return None
+        if side == PositionSide.LONG and sl >= price:
+            return None
+        if side == PositionSide.SHORT and sl <= price:
+            return None
+        price_risk = abs(price - sl) * units
+        # Mặc định ước lượng exit_fee = entry_fee khi gọi trực tiếp Position.open/scale_in
+        return price_risk + fee + fee
+
+    @property
+    def remaining_risk_amount(self) -> float | None:
+        if self.is_flat or not self.contributions:
+            return None
+        active = [c for c in self.contributions if c.remaining_units > 1e-12]
+        if not active:
+            return None
+        if any(c.remaining_risk_amount is None for c in active):
+            return None
+        return float(sum(c.remaining_risk_amount for c in active if c.remaining_risk_amount is not None))
+
     def open(
         self,
         side: PositionSide,
@@ -200,6 +248,7 @@ class Position:
         slippage_cost: float = 0.0,
         order_id: str | None = None,
         fill_id: str | None = None,
+        initial_risk_amount: float | None = None,
     ) -> None:
         if self.is_closed:
             raise ValueError(
@@ -214,6 +263,8 @@ class Position:
         qty, u = self._resolve_and_validate_qty_units(quantity, units)
         ts = pd.Timestamp(timestamp) if timestamp is not None else pd.Timestamp("1970-01-01")
         b_idx = int(opened_bar_index) if opened_bar_index is not None else None
+        sl_val = float(stop_loss_price) if stop_loss_price is not None else None
+        init_risk = self._resolve_entry_risk(side, p, u, f, sl_val, initial_risk_amount)
 
         self.side = side
         self.quantity = qty
@@ -221,7 +272,7 @@ class Position:
         self.entry_time = ts
         self.entry_fee = f
         self.entry_slippage_cost = s
-        self.stop_loss_price = float(stop_loss_price) if stop_loss_price is not None else None
+        self.stop_loss_price = sl_val
         self.take_profit_price = float(take_profit_price) if take_profit_price is not None else None
         self.opened_bar_index = b_idx
         self.opened_phase = opened_phase
@@ -239,6 +290,9 @@ class Position:
                 initial_slippage_cost=s,
                 remaining_slippage_cost=s,
                 contract_size=self.contract_size,
+                initial_stop_loss_price=sl_val,
+                initial_risk_amount=init_risk,
+                remaining_risk_amount=init_risk,
             )
         ]
 
@@ -257,6 +311,7 @@ class Position:
         bar_index: int | None = None,
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,
+        initial_risk_amount: float | None = None,
     ) -> None:
         if self.is_flat or self.is_closed:
             raise ValueError(f"Không thể scale_in khi Position ({self.symbol}) đang FLAT hoặc CLOSED.")
@@ -287,6 +342,9 @@ class Position:
         if take_profit_price is not None:
             self.take_profit_price = float(take_profit_price)
 
+        eff_sl = float(stop_loss_price) if stop_loss_price is not None else self.stop_loss_price
+        init_risk = self._resolve_entry_risk(side, p, add_u, f, eff_sl, initial_risk_amount)
+
         ts = pd.Timestamp(timestamp) if timestamp is not None else (self.entry_time or pd.Timestamp("1970-01-01"))
         b_idx = int(bar_index) if bar_index is not None else None
         self.contributions.append(
@@ -303,6 +361,9 @@ class Position:
                 initial_slippage_cost=s,
                 remaining_slippage_cost=s,
                 contract_size=self.contract_size,
+                initial_stop_loss_price=eff_sl,
+                initial_risk_amount=init_risk,
+                remaining_risk_amount=init_risk,
             )
         )
 
@@ -374,6 +435,9 @@ class Position:
 
         # Nếu Position được sửa trực tiếp trong test cũ mà không có contributions, tạo 1 contribution tổng hợp
         if not self.contributions:
+            fallback_risk = self._resolve_entry_risk(
+                self.side, self.average_entry_price, curr_units, self.entry_fee, self.stop_loss_price, None
+            )
             self.contributions = [
                 EntryContribution(
                     order_id=None,
@@ -388,6 +452,9 @@ class Position:
                     initial_slippage_cost=self.entry_slippage_cost,
                     remaining_slippage_cost=self.entry_slippage_cost,
                     contract_size=self.contract_size,
+                    initial_stop_loss_price=self.stop_loss_price,
+                    initial_risk_amount=fallback_risk,
+                    remaining_risk_amount=fallback_risk,
                 )
             ]
 
@@ -398,13 +465,21 @@ class Position:
                 alloc_u = contrib.remaining_units
                 alloc_f = contrib.remaining_entry_fee
                 alloc_s = contrib.remaining_slippage_cost
+                alloc_r: float | None = contrib.remaining_risk_amount
                 contrib.remaining_units = 0.0
                 contrib.remaining_entry_fee = 0.0
                 contrib.remaining_slippage_cost = 0.0
+                if contrib.remaining_risk_amount is not None:
+                    contrib.remaining_risk_amount = 0.0
             else:
                 alloc_u = contrib.remaining_units * ratio
                 alloc_f = contrib.remaining_entry_fee * ratio
                 alloc_s = contrib.remaining_slippage_cost * ratio
+                if contrib.remaining_risk_amount is not None:
+                    alloc_r = contrib.remaining_risk_amount * ratio
+                    contrib.remaining_risk_amount = max(0.0, contrib.remaining_risk_amount - alloc_r)
+                else:
+                    alloc_r = None
                 contrib.remaining_units -= alloc_u
                 contrib.remaining_entry_fee -= alloc_f
                 contrib.remaining_slippage_cost -= alloc_s
@@ -421,6 +496,7 @@ class Position:
                     allocated_quantity=alloc_q,
                     allocated_entry_fee=alloc_f,
                     allocated_entry_slippage_cost=alloc_s,
+                    allocated_risk_amount=alloc_r,
                 )
             )
             if contrib.order_id is not None and contrib.order_id not in entry_order_ids:
@@ -457,6 +533,15 @@ class Position:
         entry_notional = avg_ep * c_units
         return_pct = (net_pnl / entry_notional) * 100.0 if entry_notional > 0 else 0.0
 
+        total_allocated_risk: float | None = None
+        r_multiple: float | None = None
+        if allocations and all(a.allocated_risk_amount is not None for a in allocations):
+            total_allocated_risk = float(sum(a.allocated_risk_amount for a in allocations if a.allocated_risk_amount is not None))
+            if total_allocated_risk > 1e-12:
+                r_multiple = float(net_pnl / total_allocated_risk)
+            else:
+                total_allocated_risk = None
+
         trade_record: dict[str, Any] = {
             "trade_id": trade_id,
             "position_id": self.position_id,
@@ -486,6 +571,8 @@ class Position:
             "gross_pnl": gross_pnl,
             "net_pnl": net_pnl,
             "return_pct": return_pct,
+            "initial_risk_amount": total_allocated_risk,
+            "r_multiple": r_multiple,
             "reason": reason,
             "_allocations": allocations,
         }

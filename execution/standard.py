@@ -617,12 +617,36 @@ class StandardExecutionModel(ExecutionModel):
             is_opening=is_opening,
         )
 
+        initial_risk_amount: float | None = None
+        eff_sl_for_risk = stop_loss_price
+        if eff_sl_for_risk is None and is_opening and not pos.is_flat and pos.stop_loss_price is not None:
+            eff_sl_for_risk = pos.stop_loss_price
+        if is_opening and eff_sl_for_risk is not None and eff_sl_for_risk > 0.0:
+            valid_sl = (
+                (proposal.side == OrderSide.BUY and eff_sl_for_risk < proposal.fill_price)
+                or (proposal.side == OrderSide.SELL and eff_sl_for_risk > proposal.fill_price)
+            )
+            if valid_sl:
+                exit_side = OrderSide.SELL if proposal.side == OrderSide.BUY else OrderSide.BUY
+                sl_exit_p, _ = self._apply_slippage(float(eff_sl_for_risk), exit_side)
+                price_risk = abs(proposal.fill_price - sl_exit_p) * proposal.units
+                est_exit_fee = self.fee_model.calculate_fee(
+                    sl_exit_p,
+                    proposal.units,
+                    quantity=proposal.quantity,
+                    side=exit_side,
+                    is_opening=False,
+                )
+                initial_risk_amount = price_risk + fee + est_exit_fee
+
         meta = dict(proposal.metadata) if proposal.metadata else {}
         meta["slippage_cost"] = proposal.slippage * proposal.units
         meta["phase"] = proposal.phase.value
         meta["origin"] = proposal.origin.value
         meta["base_price"] = proposal.base_price
         meta["bar_index"] = proposal.bar_index
+        if initial_risk_amount is not None:
+            meta["initial_risk_amount"] = initial_risk_amount
 
         self._fill_counter += 1
         fill = Fill(
@@ -646,6 +670,7 @@ class StandardExecutionModel(ExecutionModel):
             take_profit_price=take_profit_price,
             bar_index=proposal.bar_index,
             phase=proposal.phase,
+            initial_risk_amount=initial_risk_amount,
         )
         return fill
 

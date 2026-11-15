@@ -21,6 +21,9 @@ class EntryContribution:
     initial_slippage_cost: float = 0.0
     remaining_slippage_cost: float = 0.0
     contract_size: float = 100.0
+    initial_stop_loss_price: float | None = None
+    initial_risk_amount: float | None = None
+    remaining_risk_amount: float | None = None
 
     @property
     def initial_quantity(self) -> float:
@@ -45,6 +48,7 @@ class TradeAllocation:
     allocated_quantity: float
     allocated_entry_fee: float
     allocated_entry_slippage_cost: float
+    allocated_risk_amount: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +61,7 @@ class TradeAllocation:
             "allocated_quantity": self.allocated_quantity,
             "allocated_entry_fee": self.allocated_entry_fee,
             "allocated_entry_slippage_cost": self.allocated_entry_slippage_cost,
+            "allocated_risk_amount": self.allocated_risk_amount,
         }
 
 
@@ -94,6 +99,8 @@ class TradeRecord:
     entry_fill_id: str | None = None
     exit_order_id: str | None = None
     exit_fill_id: str | None = None
+    initial_risk_amount: float | None = None
+    r_multiple: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +132,8 @@ class TradeRecord:
             "gross_pnl": self.gross_pnl,
             "net_pnl": self.net_pnl,
             "return_pct": self.return_pct,
+            "initial_risk_amount": self.initial_risk_amount,
+            "r_multiple": self.r_multiple,
             "reason": self.reason,
         }
 

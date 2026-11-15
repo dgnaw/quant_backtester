@@ -21,6 +21,13 @@ class BacktestResult:
     open_positions: pd.DataFrame = field(default_factory=pd.DataFrame)
     trade_allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
     risk_events: pd.DataFrame = field(default_factory=pd.DataFrame)
+    returns_series: pd.DataFrame = field(default_factory=pd.DataFrame)
+    drawdown_series: pd.DataFrame = field(default_factory=pd.DataFrame)
+    drawdown_episodes: pd.DataFrame = field(default_factory=pd.DataFrame)
+    period_stats: pd.DataFrame = field(default_factory=pd.DataFrame)
+    monthly_return_matrix: pd.DataFrame = field(default_factory=pd.DataFrame)
+    benchmark_equity: pd.DataFrame = field(default_factory=pd.DataFrame)
+    accounting_reconciliation: Any = None
 
     @property
     def final_balance(self) -> float:
@@ -44,6 +51,13 @@ class BacktestResult:
             "open_positions": self.open_positions,
             "trade_allocations": self.trade_allocations,
             "risk_events": self.risk_events,
+            "returns_series": self.returns_series,
+            "drawdown_series": self.drawdown_series,
+            "drawdown_episodes": self.drawdown_episodes,
+            "period_stats": self.period_stats,
+            "monthly_return_matrix": self.monthly_return_matrix,
+            "benchmark_equity": self.benchmark_equity,
+            "accounting_reconciliation": self.accounting_reconciliation,
             "metrics": self.metrics,
             "final_balance": self.final_balance,
             "final_equity": self.final_equity,

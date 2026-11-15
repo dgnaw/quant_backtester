@@ -23,7 +23,11 @@ from .models.order import ExecutionPhase, Order, OrderIntent, OrderOrigin, Order
 from .models.quote import QuoteBar
 from .models.result import BacktestResult
 from .models.signal import Signal, SignalType
-from .analytics import calculate_metrics
+from .analytics import (
+    build_analytics_result,
+    build_buy_and_hold_benchmark,
+    calculate_metrics,
+)
 
 
 class BacktestEngine:
@@ -395,6 +399,7 @@ class BacktestEngine:
         strategy: Strategy,
         trade_start: int = 0,
         run_mode: StrategyMode | None = None,
+        benchmark_data: pd.DataFrame | pd.Series | None = None,
     ) -> BacktestResult:
         if hasattr(strategy, "reset"):
             strategy.reset()
@@ -436,6 +441,7 @@ class BacktestEngine:
                 signal_list=signal_list,
                 warmup=warmup,
                 effective_trade_start=effective_trade_start,
+                benchmark_data=benchmark_data,
             )
 
         # ---------------------------------------------------------------------
@@ -856,16 +862,38 @@ class BacktestEngine:
             else pd.DataFrame()
         )
 
-        metrics = calculate_metrics(
-            {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
+        eff_bench = benchmark_data
+        if (
+            eff_bench is None
+            and cfg.analytics.enable_buy_and_hold_benchmark
+            and not df_bars.empty
+            and "close" in df_bars.columns
+        ):
+            eff_bench = build_buy_and_hold_benchmark(
+                df_bars,
+                initial_balance=cfg.account.initial_balance,
+                effective_trade_start=effective_trade_start,
+                price_col="close",
+            )
+
+        analytics_res = build_analytics_result(
+            {
+                "equity": equity_df,
+                "trades": trades_df,
+                "ledger": ledger_df,
+                "open_positions": open_positions_df,
+                "final_balance": account.balance,
+                "config": cfg,
+            },
             cfg,
+            benchmark_data=eff_bench,
         )
 
         return BacktestResult(
             equity=equity_df,
             trades=trades_df,
             orders=orders_df,
-            metrics=metrics,
+            metrics=analytics_res.metrics,
             config=cfg,
             strategy_name=strategy.name,
             strategy_parameters=strategy.get_parameters(),
@@ -876,6 +904,13 @@ class BacktestEngine:
             open_positions=open_positions_df,
             trade_allocations=allocations_df,
             risk_events=risk_events_df,
+            returns_series=analytics_res.returns_series,
+            drawdown_series=analytics_res.drawdown_series,
+            drawdown_episodes=analytics_res.drawdown_episodes,
+            period_stats=analytics_res.monthly_stats,
+            monthly_return_matrix=analytics_res.monthly_return_matrix,
+            benchmark_equity=analytics_res.benchmark_series,
+            accounting_reconciliation=analytics_res.reconciliation,
         )
 
     def _run_custom_execution_model(
@@ -886,6 +921,7 @@ class BacktestEngine:
         signal_list: list[Signal] | None,
         warmup: int,
         effective_trade_start: int,
+        benchmark_data: pd.DataFrame | pd.Series | None = None,
     ) -> BacktestResult:
         """
         Nhánh tương thích cho các custom ExecutionModel được inject trực tiếp
@@ -1082,16 +1118,38 @@ class BacktestEngine:
             else pd.DataFrame()
         )
 
-        metrics = calculate_metrics(
-            {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
+        eff_bench = benchmark_data
+        if (
+            eff_bench is None
+            and cfg.analytics.enable_buy_and_hold_benchmark
+            and not df_bars.empty
+            and "close" in df_bars.columns
+        ):
+            eff_bench = build_buy_and_hold_benchmark(
+                df_bars,
+                initial_balance=cfg.account.initial_balance,
+                effective_trade_start=effective_trade_start,
+                price_col="close",
+            )
+
+        analytics_res = build_analytics_result(
+            {
+                "equity": equity_df,
+                "trades": trades_df,
+                "ledger": ledger_df,
+                "open_positions": open_positions_df,
+                "final_balance": account.balance,
+                "config": cfg,
+            },
             cfg,
+            benchmark_data=eff_bench,
         )
 
         return BacktestResult(
             equity=equity_df,
             trades=trades_df,
             orders=orders_df,
-            metrics=metrics,
+            metrics=analytics_res.metrics,
             config=cfg,
             strategy_name=strategy.name,
             strategy_parameters=strategy.get_parameters(),
@@ -1102,4 +1160,11 @@ class BacktestEngine:
             open_positions=open_positions_df,
             trade_allocations=allocations_df,
             risk_events=risk_events_df,
+            returns_series=analytics_res.returns_series,
+            drawdown_series=analytics_res.drawdown_series,
+            drawdown_episodes=analytics_res.drawdown_episodes,
+            period_stats=analytics_res.monthly_stats,
+            monthly_return_matrix=analytics_res.monthly_return_matrix,
+            benchmark_equity=analytics_res.benchmark_series,
+            accounting_reconciliation=analytics_res.reconciliation,
         )

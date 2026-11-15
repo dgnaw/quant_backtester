@@ -79,15 +79,15 @@ Tài liệu này đóng vai trò là **Kim chỉ nam kiến trúc (Architecture 
 - [x] Quản lý rủi ro tương quan giữa các vị thế.
 - [x] Có cơ chế ngừng tạo lệnh khi vượt giới hạn rủi ro.
 
-### G. Accounting và Performance Analytics (P0) — [0/8]
-- [ ] Có ledger ghi nhận cash flow và giao dịch.
-- [ ] Tính return từ equity series nhất quán.
-- [ ] Tính drawdown từ equity curve.
-- [ ] Sharpe có annualization factor phù hợp timeframe.
-- [ ] Có Sortino và Calmar.
-- [ ] Có expectancy, average R và profit factor.
-- [ ] Trade statistics tính trên PnL ròng.
-- [ ] Có benchmark và phân tích theo giai đoạn.
+### G. Accounting và Performance Analytics (P0) — [8/8] Hoàn thành
+- [x] Có ledger ghi nhận cash flow và giao dịch.
+- [x] Tính return từ equity series nhất quán.
+- [x] Tính drawdown từ equity curve.
+- [x] Sharpe có annualization factor phù hợp timeframe.
+- [x] Có Sortino và Calmar.
+- [x] Có expectancy, average R và profit factor.
+- [x] Trade statistics tính trên PnL ròng.
+- [x] Có benchmark và phân tích theo giai đoạn.
 
 ### H. Validation và Backtest Integrity (P0) — [0/9]
 - [ ] Không có look-ahead bias.

@@ -48,6 +48,8 @@ TRADE_COLUMNS = [
     "gross_pnl",
     "net_pnl",
     "return_pct",
+    "initial_risk_amount",
+    "r_multiple",
     "reason",
 ]
 
@@ -60,7 +62,9 @@ OPEN_POSITION_COLUMNS = [
     "entry_time",
     "entry_price",
     "entry_fee",
+    "remaining_entry_fee",
     "entry_slippage_cost",
+    "remaining_risk_amount",
     "mark_price",
     "unrealized_pnl",
     "entry_order_ids",
@@ -77,6 +81,7 @@ TRADE_ALLOCATION_COLUMNS = [
     "allocated_quantity",
     "allocated_entry_fee",
     "allocated_entry_slippage_cost",
+    "allocated_risk_amount",
 ]
 
 
@@ -265,6 +270,7 @@ class Portfolio:
         take_profit_price: float | None = None,
         bar_index: int | None = None,
         phase: ExecutionPhase | None = None,
+        initial_risk_amount: float | None = None,
     ) -> None:
         if not isinstance(fill, Fill):
             raise TypeError("fill phải là một thực thể của Fill.")
@@ -290,6 +296,11 @@ class Portfolio:
             if (fill.metadata and "slippage_cost" in fill.metadata)
             else float(fill.slippage) * float(fill.units)
         )
+        eff_initial_risk = initial_risk_amount
+        if eff_initial_risk is None and fill.metadata and "initial_risk_amount" in fill.metadata:
+            raw_r = fill.metadata["initial_risk_amount"]
+            if raw_r is not None:
+                eff_initial_risk = float(raw_r)
 
         target_side = PositionSide.LONG if fill.side == OrderSide.BUY else PositionSide.SHORT
         pos = self.active_positions.get(fill.symbol)
@@ -326,6 +337,7 @@ class Portfolio:
                     take_profit_price=take_profit_price,
                     opened_bar_index=eff_bar_idx,
                     opened_phase=eff_phase,
+                    initial_risk_amount=eff_initial_risk,
                 )
                 self.account.deduct_fee(
                     fill.fee,
@@ -354,6 +366,7 @@ class Portfolio:
                     bar_index=eff_bar_idx,
                     stop_loss_price=stop_loss_price,
                     take_profit_price=take_profit_price,
+                    initial_risk_amount=eff_initial_risk,
                 )
                 self.account.deduct_fee(
                     fill.fee,
@@ -458,6 +471,11 @@ class Portfolio:
                         instrument_config=inst,
                         position_id=self._next_position_id(),
                     )
+                    open_initial_risk = (
+                        eff_initial_risk * (1.0 - close_ratio)
+                        if eff_initial_risk is not None
+                        else None
+                    )
                     rev_pos.open(
                         side=target_side,
                         price=fill.price,
@@ -472,6 +490,7 @@ class Portfolio:
                         take_profit_price=take_profit_price,
                         opened_bar_index=eff_bar_idx,
                         opened_phase=eff_phase,
+                        initial_risk_amount=open_initial_risk,
                     )
                     self.account.deduct_fee(
                         open_fee,
@@ -555,7 +574,9 @@ class Portfolio:
                 "entry_time": pos.entry_time,
                 "entry_price": pos.average_entry_price,
                 "entry_fee": pos.entry_fee,
+                "remaining_entry_fee": pos.entry_fee,
                 "entry_slippage_cost": pos.entry_slippage_cost,
+                "remaining_risk_amount": pos.remaining_risk_amount,
                 "mark_price": mark_p,
                 "unrealized_pnl": upnl,
                 "entry_order_ids": entry_order_ids,
@@ -647,11 +668,15 @@ class Portfolio:
             sum_u = sum(a.allocated_units for a in allocs_for_c) + c.remaining_units
             sum_f = sum(a.allocated_entry_fee for a in allocs_for_c) + c.remaining_entry_fee
             sum_s = sum(a.allocated_entry_slippage_cost for a in allocs_for_c) + c.remaining_slippage_cost
-            for label, actual_v, init_v in (
+            checks_list = [
                 ("units", sum_u, c.initial_units),
                 ("entry_fee", sum_f, c.initial_entry_fee),
                 ("slippage_cost", sum_s, c.initial_slippage_cost),
-            ):
+            ]
+            if c.initial_risk_amount is not None and c.remaining_risk_amount is not None:
+                sum_r = sum(float(a.allocated_risk_amount or 0.0) for a in allocs_for_c) + c.remaining_risk_amount
+                checks_list.append(("risk_amount", sum_r, c.initial_risk_amount))
+            for label, actual_v, init_v in checks_list:
                 d = actual_v - init_v
                 if abs(d) > abs(max_contrib_diff):
                     max_contrib_diff = d

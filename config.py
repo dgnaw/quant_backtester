@@ -317,6 +317,45 @@ class RiskConfig:
 
 
 @dataclass
+class AnalyticsConfig:
+    risk_free_rate_annual: float = 0.0
+    timeframe: str | None = None
+    auto_annualize_from_data: bool = False
+    trading_days_per_year: int = 252
+    trading_hours_per_day: float = 24.0
+    enable_buy_and_hold_benchmark: bool = True
+
+    def __post_init__(self):
+        if (
+            isinstance(self.risk_free_rate_annual, bool)
+            or not isinstance(self.risk_free_rate_annual, (int, float))
+            or not math.isfinite(float(self.risk_free_rate_annual))
+            or float(self.risk_free_rate_annual) <= -1.0
+        ):
+            raise ValueError("risk_free_rate_annual phải là số thực hữu hạn và > -1.0.")
+        self.risk_free_rate_annual = float(self.risk_free_rate_annual)
+        if (
+            isinstance(self.trading_days_per_year, bool)
+            or not isinstance(self.trading_days_per_year, int)
+            or self.trading_days_per_year <= 0
+        ):
+            raise ValueError("trading_days_per_year phải là số nguyên dương (> 0).")
+        if (
+            isinstance(self.trading_hours_per_day, bool)
+            or not isinstance(self.trading_hours_per_day, (int, float))
+            or not math.isfinite(float(self.trading_hours_per_day))
+            or float(self.trading_hours_per_day) <= 0.0
+            or float(self.trading_hours_per_day) > 24.0
+        ):
+            raise ValueError("trading_hours_per_day phải nằm trong khoảng (0.0, 24.0].")
+        self.trading_hours_per_day = float(self.trading_hours_per_day)
+        if self.timeframe is not None:
+            self.timeframe = str(self.timeframe).strip().upper()
+            if not self.timeframe:
+                self.timeframe = None
+
+
+@dataclass
 class EngineConfig:
     account: AccountConfig = field(default_factory=AccountConfig)
     instrument: InstrumentConfig = field(default_factory=InstrumentConfig)
@@ -324,7 +363,11 @@ class EngineConfig:
     fee: FeeConfig = field(default_factory=FeeConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     bars_per_year: int = 96 * 252
+    risk_free_rate_annual: float | None = None
+    timeframe: str | None = None
+    auto_annualize_from_data: bool | None = None
     force_close_at_end: bool = True
     reverse_policy: ReversePolicy = ReversePolicy.IGNORE
     intrabar_conflict_policy: IntrabarConflictPolicy = IntrabarConflictPolicy.WORST_CASE_SL_FIRST
@@ -345,6 +388,26 @@ class EngineConfig:
                 mode if isinstance(mode, PositionMode) else PositionMode(mode)
             )
         self.position_mode_by_symbol = normalized_map
+        if self.risk_free_rate_annual is not None:
+            if (
+                isinstance(self.risk_free_rate_annual, bool)
+                or not isinstance(self.risk_free_rate_annual, (int, float))
+                or not math.isfinite(float(self.risk_free_rate_annual))
+                or float(self.risk_free_rate_annual) <= -1.0
+            ):
+                raise ValueError("risk_free_rate_annual phải là số thực hữu hạn và > -1.0.")
+            self.analytics.risk_free_rate_annual = float(self.risk_free_rate_annual)
+        else:
+            self.risk_free_rate_annual = self.analytics.risk_free_rate_annual
+        if self.timeframe is not None:
+            self.analytics.timeframe = str(self.timeframe).strip().upper()
+            self.timeframe = self.analytics.timeframe
+        else:
+            self.timeframe = self.analytics.timeframe
+        if self.auto_annualize_from_data is not None:
+            self.analytics.auto_annualize_from_data = bool(self.auto_annualize_from_data)
+        else:
+            self.auto_annualize_from_data = self.analytics.auto_annualize_from_data
 
     def get_position_mode(self, symbol: str) -> PositionMode:
         return self.position_mode_by_symbol.get(symbol, self.default_position_mode)
