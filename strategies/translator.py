@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Mapping
 
-from quant_backtester.config import ReversePolicy
+from quant_backtester.config import PositionMode, ReversePolicy
 from quant_backtester.models.order import OrderIntent, OrderOrigin, OrderSide, OrderType, TimeInForce
 from quant_backtester.models.signal import Signal, SignalType
 from quant_backtester.portfolio.position import PositionSide, PositionView
@@ -11,16 +11,26 @@ class SignalTranslator:
     """
     Chuyển đổi Signal + PositionView chỉ đọc thành OrderIntent | None.
     Thực thi bảng quyết định 15 trạng thái (Position × Signal) và ghi lại signal_log.
+    Hỗ trợ PositionMode (NETTING_SINGLE mặc định, NETTING_SCALE_IN) và Partial Close qua directives.
     """
 
     def __init__(
         self,
         default_quantity: float | None = 0.01,
         reverse_policy: ReversePolicy = ReversePolicy.IGNORE,
+        position_mode: PositionMode = PositionMode.NETTING_SINGLE,
+        position_mode_by_symbol: dict[str, PositionMode] | None = None,
     ):
         self.default_quantity = default_quantity
         self.reverse_policy = reverse_policy
+        self.position_mode = position_mode
+        self.position_mode_by_symbol: dict[str, PositionMode] = (
+            dict(position_mode_by_symbol) if position_mode_by_symbol else {}
+        )
         self.signal_log: list[dict[str, Any]] = []
+
+    def get_position_mode(self, symbol: str) -> PositionMode:
+        return self.position_mode_by_symbol.get(symbol, self.position_mode)
 
     def _effective_signal_type(self, signal: Signal, position_view: PositionView) -> SignalType:
         """
@@ -132,14 +142,26 @@ class SignalTranslator:
         reason: str = "STRATEGY_EXIT",
         extra_meta: dict[str, Any] | None = None,
     ) -> OrderIntent:
-        meta = {"signal_time": signal.time}
+        sig_meta = signal.metadata or {}
+        raw_directives = sig_meta.get("directives", {}) if isinstance(sig_meta, Mapping) else {}
+        directives = dict(raw_directives) if isinstance(raw_directives, Mapping) else {}
+
+        meta: dict[str, Any] = {"signal_time": signal.time}
+        if "quantity" in directives and directives["quantity"] is not None:
+            qty = float(directives["quantity"])
+            meta["explicit_exit_quantity"] = True
+            meta["directives"] = directives
+        else:
+            qty = self.default_quantity
+            meta["explicit_exit_quantity"] = False
+
         if extra_meta:
             meta.update(extra_meta)
         return OrderIntent(
             symbol=signal.symbol,
             side=close_side,
             order_type=OrderType.MARKET,
-            quantity=self.default_quantity,
+            quantity=qty,
             origin=OrderOrigin.STRATEGY_EXIT,
             reason=reason,
             metadata=meta,
@@ -176,6 +198,7 @@ class SignalTranslator:
 
         sig_type = self._effective_signal_type(signal, position_view)
         pos_side = position_view.side if not position_view.is_flat else PositionSide.FLAT
+        pos_mode = self.get_position_mode(signal.symbol)
 
         intent: OrderIntent | None = None
         decision = "NO_ACTION"
@@ -201,8 +224,13 @@ class SignalTranslator:
         # --- TRƯỜNG HỢP 2: POSITION = LONG ---
         elif pos_side == PositionSide.LONG:
             if sig_type == SignalType.LONG:
-                decision = "IGNORED"
-                reason = "ALREADY_LONG"
+                if pos_mode == PositionMode.NETTING_SCALE_IN:
+                    intent = self._build_entry_intent(signal, OrderSide.BUY, "SCALE_IN_LONG")
+                    decision = "SCALE_IN_LONG"
+                    reason = "SCALE_IN_LONG"
+                else:
+                    decision = "IGNORED"
+                    reason = "ALREADY_LONG"
             elif sig_type in (SignalType.EXIT_LONG, SignalType.EXIT_ALL):
                 intent = self._build_exit_intent(signal, OrderSide.SELL, "STRATEGY_EXIT")
                 decision = "CLOSE_LONG"
@@ -219,7 +247,7 @@ class SignalTranslator:
                         signal,
                         OrderSide.SELL,
                         "STRATEGY_EXIT",
-                        extra_meta={"reverse_to_side": OrderSide.SELL, "reverse_signal": signal},
+                        extra_meta={"reverse_to_side": OrderSide.SELL, "reverse_signal": signal, "explicit_exit_quantity": False},
                     )
                     decision = "REVERSE_CLOSE"
                     reason = "REVERSE_POLICY_REVERSE"
@@ -230,8 +258,13 @@ class SignalTranslator:
         # --- TRƯỜNG HỢP 3: POSITION = SHORT ---
         elif pos_side == PositionSide.SHORT:
             if sig_type == SignalType.SHORT:
-                decision = "IGNORED"
-                reason = "ALREADY_SHORT"
+                if pos_mode == PositionMode.NETTING_SCALE_IN:
+                    intent = self._build_entry_intent(signal, OrderSide.SELL, "SCALE_IN_SHORT")
+                    decision = "SCALE_IN_SHORT"
+                    reason = "SCALE_IN_SHORT"
+                else:
+                    decision = "IGNORED"
+                    reason = "ALREADY_SHORT"
             elif sig_type in (SignalType.EXIT_SHORT, SignalType.EXIT_ALL):
                 intent = self._build_exit_intent(signal, OrderSide.BUY, "STRATEGY_EXIT")
                 decision = "CLOSE_SHORT"
@@ -248,7 +281,7 @@ class SignalTranslator:
                         signal,
                         OrderSide.BUY,
                         "STRATEGY_EXIT",
-                        extra_meta={"reverse_to_side": OrderSide.BUY, "reverse_signal": signal},
+                        extra_meta={"reverse_to_side": OrderSide.BUY, "reverse_signal": signal, "explicit_exit_quantity": False},
                     )
                     decision = "REVERSE_CLOSE"
                     reason = "REVERSE_POLICY_REVERSE"

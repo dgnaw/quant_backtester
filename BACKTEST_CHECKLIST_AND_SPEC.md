@@ -59,15 +59,15 @@ Tài liệu này đóng vai trò là **Kim chỉ nam kiến trúc (Architecture 
 - [x] Thiết kế mở rộng cho partial fills và rejected orders.
 - [x] Ghi lại order lifecycle và lý do fill/reject/cancel.
 
-### E. Position và Account Management (P0) — [0/8]
-- [ ] Quản lý trạng thái Flat, Long, Short.
-- [ ] Quản lý entry, exit và reverse position.
-- [ ] Mỗi trade có ID và liên kết với các order.
-- [ ] Phân biệt realized và unrealized PnL.
-- [ ] Phân bổ phí entry và exit vào trade.
-- [ ] Equity = Balance + Unrealized PnL theo đúng quy ước.
-- [ ] Có quy tắc đóng vị thế cuối kỳ.
-- [ ] Xác định rõ hỗ trợ một hay nhiều vị thế trên mỗi symbol.
+### E. Position và Account Management (P0) — [8/8] Hoàn thành
+- [x] Quản lý trạng thái Flat, Long, Short.
+- [x] Quản lý entry, exit và reverse position.
+- [x] Mỗi trade có ID và liên kết với các order.
+- [x] Phân biệt realized và unrealized PnL.
+- [x] Phân bổ phí entry và exit vào trade.
+- [x] Equity = Balance + Unrealized PnL theo đúng quy ước.
+- [x] Có quy tắc đóng vị thế cuối kỳ.
+- [x] Xác định rõ hỗ trợ một hay nhiều vị thế trên mỗi symbol.
 
 ### F. Risk Management và Portfolio (P1) — [0/8]
 - [ ] Position sizing theo risk amount và stop distance.

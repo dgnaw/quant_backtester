@@ -13,6 +13,7 @@ from .order import (
 from .order_event import OrderEvent
 from .quote import QuoteBar
 from .fill import Fill
+from .trade import EntryContribution, ReconciliationReport, TradeAllocation, TradeRecord
 from .result import BacktestResult
 
 __all__ = [
@@ -30,5 +31,9 @@ __all__ = [
     "OrderEvent",
     "QuoteBar",
     "Fill",
+    "EntryContribution",
+    "TradeAllocation",
+    "TradeRecord",
+    "ReconciliationReport",
     "BacktestResult",
 ]

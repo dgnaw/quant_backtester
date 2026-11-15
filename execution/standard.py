@@ -534,7 +534,11 @@ class StandardExecutionModel(ExecutionModel):
         take_profit_price: float | None = None,
     ) -> Fill:
         pos = portfolio.get_position(proposal.symbol)
-        is_opening = pos.is_flat
+        is_opening = (
+            pos.is_flat
+            or (pos.is_long and proposal.side == OrderSide.BUY)
+            or (pos.is_short and proposal.side == OrderSide.SELL)
+        )
 
         order = proposal.order
         if order is None:
@@ -577,6 +581,7 @@ class StandardExecutionModel(ExecutionModel):
         meta["phase"] = proposal.phase.value
         meta["origin"] = proposal.origin.value
         meta["base_price"] = proposal.base_price
+        meta["bar_index"] = proposal.bar_index
 
         self._fill_counter += 1
         fill = Fill(

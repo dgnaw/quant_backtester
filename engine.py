@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 import pandas as pd
 
-from .config import EngineConfig, BacktestConfig
+from .config import EngineConfig, BacktestConfig, PositionMode
 from .strategies.base import Strategy, StrategyMode
 from .strategies.context import FillView, StrategyContext
 from .strategies.adapters import frame_to_signals
@@ -224,7 +224,22 @@ class BacktestEngine:
     ) -> Order | None:
         cfg = self.config
         if intent.origin == OrderOrigin.STRATEGY_EXIT or intent.reason == "STRATEGY_EXIT":
-            qty_lots = pos_units / cfg.instrument.contract_size if cfg.instrument.contract_size > 0 else cfg.instrument.lot_size
+            explicit_qty = bool(intent.metadata.get("explicit_exit_quantity")) if intent.metadata else False
+            if explicit_qty and intent.quantity is not None and intent.quantity > 0:
+                qty_lots = float(intent.quantity)
+                exit_units = min(cfg.instrument.lots_to_units(qty_lots), pos_units)
+                qty_lots = (
+                    exit_units / cfg.instrument.contract_size
+                    if cfg.instrument.contract_size > 0
+                    else qty_lots
+                )
+            else:
+                exit_units = pos_units
+                qty_lots = (
+                    pos_units / cfg.instrument.contract_size
+                    if cfg.instrument.contract_size > 0
+                    else cfg.instrument.lot_size
+                )
             exit_intent = OrderIntent(
                 symbol=intent.symbol,
                 side=intent.side,
@@ -237,7 +252,7 @@ class BacktestEngine:
             return order_manager.create_from_intent(
                 exit_intent,
                 time=bar_time,
-                units=pos_units,
+                units=exit_units,
                 bar_index=bar_index,
                 eligible_from_bar=eligible_from_bar,
             )
@@ -336,21 +351,33 @@ class BacktestEngine:
         quote_df = spread_model.to_quote_frame(df_bars, price_type=cfg.spread.price_type, symbol=symbol)
         quote_bars = [QuoteBar.from_series(quote_df.iloc[idx], symbol=symbol) for idx in range(len(quote_df))]
 
-        account = Account(initial_balance=cfg.account.initial_balance, base_currency=cfg.account.base_currency)
-        portfolio = Portfolio(account=account)
+        account = Account(
+            initial_balance=cfg.account.initial_balance,
+            base_currency=cfg.account.base_currency,
+            account_currency=cfg.account.account_currency,
+        )
+        account.validate_currency_compatibility(cfg.instrument.quote_currency)
+        portfolio = Portfolio(
+            account=account,
+            instrument_config=cfg.instrument,
+            default_position_mode=cfg.default_position_mode,
+            position_mode_by_symbol=cfg.position_mode_by_symbol,
+        )
         order_manager = OrderManager()
         translator = SignalTranslator(
             default_quantity=cfg.instrument.lot_size,
             reverse_policy=cfg.reverse_policy,
+            position_mode=cfg.default_position_mode,
+            position_mode_by_symbol=cfg.position_mode_by_symbol,
         )
 
-        pos = portfolio.get_position(symbol)
         pending_exit_order: Order | None = None
         equity_rows: list[dict[str, Any]] = []
 
         for i, row in df_bars.iterrows():
             quote_bar = quote_bars[i]
             bar_time = quote_bar.time
+            pos = portfolio.get_position(symbol)
 
             if i < effective_trade_start:
                 equity_rows.append({
@@ -388,6 +415,7 @@ class BacktestEngine:
                 gap_prop = exec_model.propose_protective_open(pos, quote_bar, bar_index=i)
                 if gap_prop is not None:
                     fill = exec_model.commit_proposal(gap_prop, order_manager, portfolio)
+                    pos = portfolio.get_position(symbol)
                     if hasattr(strategy, "on_fill"):
                         strategy.on_fill(FillView.from_fill(fill))
                     # Cancel stale pending strategy exit order if position was just closed by Gap SL/TP
@@ -414,6 +442,7 @@ class BacktestEngine:
                         exit_prop = exec_model.propose_entry_open(pending_exit_order, quote_bar, bar_index=i)
                         if exit_prop is not None:
                             fill = exec_model.commit_proposal(exit_prop, order_manager, portfolio)
+                            pos = portfolio.get_position(symbol)
                             if hasattr(strategy, "on_fill"):
                                 strategy.on_fill(FillView.from_fill(fill))
                             # If REVERSE policy attached reverse_signal, create the opposite entry order now
@@ -438,7 +467,12 @@ class BacktestEngine:
 
             # 1.3 Pending STRATEGY_ENTRY Order at Open (Market, Marketable Limit, or Gapped Stop)
             entry_order = order_manager.get_pending_entry_order(symbol)
-            if pos.is_flat and entry_order is not None:
+            can_enter_open = pos.is_flat or (
+                portfolio.get_position_mode(symbol) == PositionMode.NETTING_SCALE_IN
+                and entry_order is not None
+                and ((pos.is_long and entry_order.side == OrderSide.BUY) or (pos.is_short and entry_order.side == OrderSide.SELL))
+            )
+            if can_enter_open and entry_order is not None:
                 entry_open_prop = exec_model.propose_entry_open(entry_order, quote_bar, bar_index=i)
                 if entry_open_prop is not None:
                     ok, reason, sl_p, tp_p = self._finalize_sl_tp(
@@ -452,6 +486,7 @@ class BacktestEngine:
                             stop_loss_price=sl_p,
                             take_profit_price=tp_p,
                         )
+                        pos = portfolio.get_position(symbol)
                         if hasattr(strategy, "on_fill"):
                             strategy.on_fill(FillView.from_fill(fill))
                     else:
@@ -469,13 +504,19 @@ class BacktestEngine:
                 range_exit_prop = exec_model.propose_protective_range(pos, quote_bar, bar_index=i)
                 if range_exit_prop is not None:
                     fill = exec_model.commit_proposal(range_exit_prop, order_manager, portfolio)
+                    pos = portfolio.get_position(symbol)
                     if hasattr(strategy, "on_fill"):
                         strategy.on_fill(FillView.from_fill(fill))
 
-            # 2.2 Pending LIMIT / STOP_MARKET Entry in Range (when flat)
+            # 2.2 Pending LIMIT / STOP_MARKET Entry in Range (when flat or scale-in allowed)
             # Positions opened here get opened_phase=RANGE and are NOT evaluated for SL/TP in this same bar!
             entry_order = order_manager.get_pending_entry_order(symbol)
-            if pos.is_flat and entry_order is not None:
+            can_enter_range = pos.is_flat or (
+                portfolio.get_position_mode(symbol) == PositionMode.NETTING_SCALE_IN
+                and entry_order is not None
+                and ((pos.is_long and entry_order.side == OrderSide.BUY) or (pos.is_short and entry_order.side == OrderSide.SELL))
+            )
+            if can_enter_range and entry_order is not None:
                 range_entry_prop = exec_model.propose_entry_range(entry_order, quote_bar, bar_index=i)
                 if range_entry_prop is not None:
                     ok, reason, sl_p, tp_p = self._finalize_sl_tp(
@@ -489,6 +530,7 @@ class BacktestEngine:
                             stop_loss_price=sl_p,
                             take_profit_price=tp_p,
                         )
+                        pos = portfolio.get_position(symbol)
                         if hasattr(strategy, "on_fill"):
                             strategy.on_fill(FillView.from_fill(fill))
                     else:
@@ -508,6 +550,7 @@ class BacktestEngine:
             )
 
             # 3.2 Mark-to-Market Equity at Bar Close (Long @ Bid Close, Short @ Ask Close)
+            pos = portfolio.get_position(symbol)
             current_equity = portfolio.get_equity({symbol: quote_bar})
             position_code = 1 if pos.is_long else (-1 if pos.is_short else 0)
             equity_rows.append({
@@ -541,6 +584,7 @@ class BacktestEngine:
         # =====================================================================
         # END OF TEST: EXPIRE PENDING ORDERS & FORCE CLOSE OPEN POSITION
         # =====================================================================
+        pos = portfolio.get_position(symbol)
         if len(quote_bars) > 0:
             last_idx = len(quote_bars) - 1
             last_quote = quote_bars[last_idx]
@@ -551,14 +595,22 @@ class BacktestEngine:
                 eot_prop = exec_model.propose_end_of_test_close(pos, last_quote, bar_index=last_idx)
                 if eot_prop is not None:
                     fill = exec_model.commit_proposal(eot_prop, order_manager, portfolio)
+                    pos = portfolio.get_position(symbol)
                     if hasattr(strategy, "on_fill"):
                         strategy.on_fill(FillView.from_fill(fill))
                 equity_rows[-1].update(balance=account.balance, equity=account.balance, position=0)
 
         equity_df = pd.DataFrame(equity_rows)
-        trades_df = pd.DataFrame(portfolio.closed_trades)
+        trades_df = portfolio.trades_to_dataframe()
         orders_df = order_manager.to_dataframe()
         events_df = order_manager.events_to_dataframe()
+        ledger_df = account.ledger.to_dataframe()
+        open_positions_df = (
+            portfolio.open_positions_to_dataframe({symbol: quote_bars[-1]})
+            if len(quote_bars) > 0
+            else portfolio.open_positions_to_dataframe()
+        )
+        allocations_df = portfolio.trade_allocations_to_dataframe()
 
         metrics = calculate_metrics(
             {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
@@ -576,6 +628,9 @@ class BacktestEngine:
             signal_log=translator.signal_log,
             effective_trade_start=effective_trade_start,
             order_events=events_df,
+            ledger=ledger_df,
+            open_positions=open_positions_df,
+            trade_allocations=allocations_df,
         )
 
     def _run_custom_execution_model(
@@ -593,22 +648,39 @@ class BacktestEngine:
         """
         cfg = self.config
         symbol = cfg.instrument.symbol
-        account = Account(initial_balance=cfg.account.initial_balance, base_currency=cfg.account.base_currency)
-        portfolio = Portfolio(account=account)
+        account = Account(
+            initial_balance=cfg.account.initial_balance,
+            base_currency=cfg.account.base_currency,
+            account_currency=cfg.account.account_currency,
+        )
+        account.validate_currency_compatibility(cfg.instrument.quote_currency)
+        portfolio = Portfolio(
+            account=account,
+            instrument_config=cfg.instrument,
+            default_position_mode=cfg.default_position_mode,
+            position_mode_by_symbol=cfg.position_mode_by_symbol,
+        )
         order_manager = OrderManager()
         translator = SignalTranslator(
             default_quantity=cfg.instrument.lot_size,
             reverse_policy=cfg.reverse_policy,
+            position_mode=cfg.default_position_mode,
+            position_mode_by_symbol=cfg.position_mode_by_symbol,
         )
 
-        pos = portfolio.get_position(symbol)
         active_directives: dict[str, Any] = {}
         pending_intent: OrderIntent | None = None
         equity_rows: list[dict[str, Any]] = []
 
+        def _commit_custom_fill(fill_obj, b_idx: int) -> None:
+            if fill_obj.fill_id in portfolio._processed_fill_ids:
+                fill_obj.fill_id = f"{fill_obj.fill_id}-{fill_obj.order_id}"
+            portfolio.on_fill(fill_obj, bar_index=b_idx)
+
         for i, row in df_bars.iterrows():
             bar_time = pd.Timestamp(row["time"])
             open_price = float(row["open"])
+            pos = portfolio.get_position(symbol)
 
             if i < effective_trade_start:
                 equity_rows.append({"time": row.time, "balance": account.balance, "equity": account.balance, "position": 0})
@@ -627,7 +699,8 @@ class BacktestEngine:
                     order = order_manager.create_from_intent(gap_intent, bar_time, pos.units, bar_index=i)
                     fill = self.execution_model.execute_order(order, row)
                     if fill:
-                        portfolio.on_fill(fill)
+                        _commit_custom_fill(fill, i)
+                        pos = portfolio.get_position(symbol)
                         active_directives.clear()
                         if hasattr(strategy, "on_fill"):
                             strategy.on_fill(FillView.from_fill(fill))
@@ -637,7 +710,8 @@ class BacktestEngine:
                     order = order_manager.create_from_intent(pending_intent, bar_time, pos.units, bar_index=i)
                     fill = self.execution_model.execute_order(order, row)
                     if fill:
-                        portfolio.on_fill(fill)
+                        _commit_custom_fill(fill, i)
+                        pos = portfolio.get_position(symbol)
                         active_directives.clear()
                         if hasattr(strategy, "on_fill"):
                             strategy.on_fill(FillView.from_fill(fill))
@@ -654,7 +728,8 @@ class BacktestEngine:
                                 order = order_manager.create_from_intent(approved_rev, bar_time, order_units, bar_index=i)
                                 fill = self.execution_model.execute_order(order, row)
                                 if fill:
-                                    portfolio.on_fill(fill)
+                                    _commit_custom_fill(fill, i)
+                                    pos = portfolio.get_position(symbol)
                                     active_directives = {
                                         "stop_loss_price": approved_rev.stop_loss_price,
                                         "take_profit_price": approved_rev.take_profit_price,
@@ -675,7 +750,8 @@ class BacktestEngine:
                         order = order_manager.create_from_intent(approved_intent, bar_time, order_units, bar_index=i)
                         fill = self.execution_model.execute_order(order, row)
                         if fill:
-                            portfolio.on_fill(fill)
+                            _commit_custom_fill(fill, i)
+                            pos = portfolio.get_position(symbol)
                             active_directives = {
                                 "stop_loss_price": approved_intent.stop_loss_price,
                                 "take_profit_price": approved_intent.take_profit_price,
@@ -697,11 +773,13 @@ class BacktestEngine:
                     order = order_manager.create_from_intent(intrabar_intent, bar_time, pos.units, bar_index=i)
                     fill = self.execution_model.execute_order(order, row)
                     if fill:
-                        portfolio.on_fill(fill)
+                        _commit_custom_fill(fill, i)
+                        pos = portfolio.get_position(symbol)
                         active_directives.clear()
                         if hasattr(strategy, "on_fill"):
                             strategy.on_fill(FillView.from_fill(fill))
 
+            pos = portfolio.get_position(symbol)
             current_equity = portfolio.get_equity({symbol: float(row["close"])})
             position_code = 1 if pos.is_long else (-1 if pos.is_short else 0)
             equity_rows.append({
@@ -715,6 +793,7 @@ class BacktestEngine:
                 sig = self._emit_bar_signal(exec_mode, strategy, signal_list, i, row, df_bars, symbol, pos.to_view())
                 pending_intent = translator.translate(sig, pos.to_view())
 
+        pos = portfolio.get_position(symbol)
         if not pos.is_flat and cfg.force_close_at_end:
             last = df_bars.iloc[-1]
             last_side = OrderSide.SELL if pos.is_long else OrderSide.BUY
@@ -729,16 +808,25 @@ class BacktestEngine:
             order = order_manager.create_from_intent(force_intent, pd.Timestamp(last["time"]), pos.units, bar_index=len(df_bars) - 1)
             fill = self.execution_model.execute_order(order, last)
             if fill:
-                portfolio.on_fill(fill)
+                _commit_custom_fill(fill, len(df_bars) - 1)
+                pos = portfolio.get_position(symbol)
                 active_directives.clear()
                 if hasattr(strategy, "on_fill"):
                     strategy.on_fill(FillView.from_fill(fill))
             equity_rows[-1].update(balance=account.balance, equity=account.balance, position=0)
 
         equity_df = pd.DataFrame(equity_rows)
-        trades_df = pd.DataFrame(portfolio.closed_trades)
+        trades_df = portfolio.trades_to_dataframe()
         orders_df = order_manager.to_dataframe()
         events_df = order_manager.events_to_dataframe()
+        ledger_df = account.ledger.to_dataframe()
+        if len(df_bars) > 0:
+            last_q_df = self.spread_model.to_quote_frame(df_bars.iloc[[-1]], price_type=cfg.spread.price_type, symbol=symbol)
+            last_q = QuoteBar.from_series(last_q_df.iloc[0], symbol=symbol)
+            open_positions_df = portfolio.open_positions_to_dataframe({symbol: last_q})
+        else:
+            open_positions_df = portfolio.open_positions_to_dataframe()
+        allocations_df = portfolio.trade_allocations_to_dataframe()
 
         metrics = calculate_metrics(
             {"equity": equity_df, "trades": trades_df, "final_balance": account.balance},
@@ -756,4 +844,7 @@ class BacktestEngine:
             signal_log=translator.signal_log,
             effective_trade_start=effective_trade_start,
             order_events=events_df,
+            ledger=ledger_df,
+            open_positions=open_positions_df,
+            trade_allocations=allocations_df,
         )

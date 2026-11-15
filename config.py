@@ -13,6 +13,11 @@ class IntrabarConflictPolicy(Enum):
     BEST_CASE_TP_FIRST = "BEST_CASE_TP_FIRST"
 
 
+class PositionMode(Enum):
+    NETTING_SINGLE = "NETTING_SINGLE"
+    NETTING_SCALE_IN = "NETTING_SCALE_IN"
+
+
 @dataclass
 # Cấu hình vốn ban đầu, đồng tiền cơ sở
 class AccountConfig:
@@ -22,6 +27,10 @@ class AccountConfig:
     def __post_init__(self):
         if self.initial_balance <= 0:
             raise ValueError("initial_balance phải lớn hơn 0.")
+
+    @property
+    def account_currency(self) -> str:
+        return self.base_currency
 
 
 @dataclass
@@ -111,12 +120,23 @@ class EngineConfig:
     reverse_policy: ReversePolicy = ReversePolicy.IGNORE
     intrabar_conflict_policy: IntrabarConflictPolicy = IntrabarConflictPolicy.WORST_CASE_SL_FIRST
     limit_penetration: float = 0.0
+    default_position_mode: PositionMode = PositionMode.NETTING_SINGLE
+    position_mode_by_symbol: dict[str, PositionMode] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.bars_per_year <= 0:
             raise ValueError("bars_per_year phải lớn hơn 0.")
         if self.limit_penetration < 0:
             raise ValueError("limit_penetration không được âm.")
+        if not isinstance(self.default_position_mode, PositionMode):
+            self.default_position_mode = PositionMode(self.default_position_mode)
+        normalized_map: dict[str, PositionMode] = {}
+        for sym, mode in (self.position_mode_by_symbol or {}).items():
+            normalized_map[str(sym)] = mode if isinstance(mode, PositionMode) else PositionMode(mode)
+        self.position_mode_by_symbol = normalized_map
+
+    def get_position_mode(self, symbol: str) -> PositionMode:
+        return self.position_mode_by_symbol.get(symbol, self.default_position_mode)
 
     @property
     def units(self) -> float:
@@ -148,6 +168,8 @@ class BacktestConfig(EngineConfig):
         reverse_policy: ReversePolicy = ReversePolicy.IGNORE,
         intrabar_conflict_policy: IntrabarConflictPolicy = IntrabarConflictPolicy.WORST_CASE_SL_FIRST,
         limit_penetration: float = 0.0,
+        default_position_mode: PositionMode = PositionMode.NETTING_SINGLE,
+        position_mode_by_symbol: dict[str, PositionMode] | None = None,
     ):
         super().__init__(
             account=AccountConfig(initial_balance=initial_balance, base_currency=base_currency),
@@ -166,6 +188,8 @@ class BacktestConfig(EngineConfig):
             reverse_policy=reverse_policy,
             intrabar_conflict_policy=intrabar_conflict_policy,
             limit_penetration=limit_penetration,
+            default_position_mode=default_position_mode,
+            position_mode_by_symbol=position_mode_by_symbol or {},
         )
 
     # Property alias để code cũ truy cập trực tiếp
