@@ -89,16 +89,16 @@ Tài liệu này đóng vai trò là **Kim chỉ nam kiến trúc (Architecture 
 - [x] Trade statistics tính trên PnL ròng.
 - [x] Có benchmark và phân tích theo giai đoạn.
 
-### H. Validation và Backtest Integrity (P0) — [0/9]
-- [ ] Không có look-ahead bias.
-- [ ] Warm-up không tạo giao dịch ngoài phạm vi kiểm thử.
-- [ ] Có In-Sample và Out-of-Sample tách biệt.
-- [ ] Walk-Forward ghép OOS theo đúng thứ tự thời gian.
-- [ ] Cùng dữ liệu, config và seed cho kết quả có thể tái lập.
-- [ ] Có stress test spread, commission và slippage.
-- [ ] Có kiểm tra độ ổn định tham số.
-- [ ] Có phân tích nhiều điều kiện/regime thị trường.
-- [ ] Có kiểm soát multiple testing và overfitting.
+### H. Validation và Backtest Integrity (P0) — [9/9] Hoàn thành
+- [x] Không có look-ahead bias.
+- [x] Warm-up không tạo giao dịch ngoài phạm vi kiểm thử.
+- [x] Có In-Sample và Out-of-Sample tách biệt.
+- [x] Walk-Forward ghép OOS theo đúng thứ tự thời gian.
+- [x] Cùng dữ liệu, config và seed cho kết quả có thể tái lập.
+- [x] Có stress test spread, commission và slippage.
+- [x] Có kiểm tra độ ổn định tham số.
+- [x] Có phân tích nhiều điều kiện/regime thị trường.
+- [x] Có kiểm soát multiple testing và overfitting.
 
 ### I. Testing và Software Quality (P0) — [0/8]
 - [ ] Unit tests cho từng module.
